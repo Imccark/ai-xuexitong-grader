@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+
+# Local week data and generated artifacts
+*/raw_submissions/
+*/processed_images/
+*/results/
+*/temp_workspace/
+*/summary.txt
+*/preprocess_summary.txt
+*/answer.tex
+*/answer.aux
+*/answer.log
+*/answer.out
+*/answer.pdf
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

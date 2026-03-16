@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>作业审阅台</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <p class="eyebrow">Homework Review</p>
+          <h1>作业审阅台</h1>
+          <p id="studentCount" class="muted">加载中...</p>
+        </div>
+        <div class="toolbar">
+          <input id="studentSearch" type="search" placeholder="搜索学号或姓名" />
+        </div>
+        <div id="studentList" class="student-list"></div>
+      </aside>
+
+      <main class="main-layout">
+        <section class="images-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Submission</p>
+              <h2 id="studentTitle">请选择学生</h2>
+            </div>
+            <div id="pageMeta" class="muted"></div>
+          </div>
+          <div id="imagesContainer" class="images-container">
+            <div class="empty-state">左侧选择一个学生后，这里会显示作业图片。</div>
+          </div>
+        </section>
+
+        <section class="editor-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Evaluation</p>
+              <h2>批注编辑</h2>
+            </div>
+            <div id="saveStatus" class="save-status">未保存</div>
+          </div>
+
+          <div class="editor-actions">
+            <button id="prevStudentBtn" type="button">上一位</button>
+            <button id="nextStudentBtn" type="button">下一位</button>
+            <button id="saveBtn" class="primary" type="button">保存</button>
+          </div>
+
+          <textarea
+            id="resultEditor"
+            placeholder="这里显示并编辑该学生的评价结果。"
+          ></textarea>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
