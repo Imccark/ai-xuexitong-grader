@@ -1,17 +1,44 @@
 # AI 学习通作业批改助手
 
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Platform](https://img.shields.io/badge/Platform-Xuexitong-orange)
+![UI](https://img.shields.io/badge/Review-Local%20Web%20UI-0A7EA4)
+
 AI-powered grader for Xuexitong assignments
 
 一个用于自动批改学习通作业的 AI 助教工具。
 
 本项目使用多模态大模型 + Python 自动化，实现：
 
-- 批量解析学生作业（PDF / 图片）
+- 批量解析学生作业
 - 根据教师提供的标准答案进行批改
 - 自动生成结构化评语
 - 提供本地审阅界面进行人工复核
 
-项目目标：
+## Quick Start
+
+首次使用时，先配置 `configs/subjects.json` 和 `prompts/default_prompt.txt`，再设置 API Key，然后执行下面三步：
+
+```bash
+python create_week.py 第二周
+python run_preprocessing.py --assignment configs/assignments/第二周.json 
+python run_batch_grading.py --assignment configs/assignments/第二周.json --max-workers 4
+```
+
+审阅与人工修改：
+
+```bash
+python review_app.py --assignment configs/assignments/第二周.json --port 8765
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8765
+```
+
+## 项目目标
 
 AI 批改 + 教师审核
 
@@ -27,9 +54,63 @@ AI 负责生成批改建议，教师保留最终判断。
 - 提供本地审阅 UI
 - 支持人工修改与复核工作流程
 
+## 适用场景
+
+- 学习通导出的整班手写作业批改
+- 教师已有标准答案，希望先由 AI 给出初步评语
+- 需要保留人工复核，而不是完全自动出分
+- 想把每周作业流程固定成可重复执行的脚本
+
+## 工作流程
+
+```text
+原始作业 zip
+        │
+        ▼
+预处理脚本
+(run_preprocessing.py)
+        │
+        ▼
+批量 AI 批改
+(run_batch_grading.py)
+        │
+        ▼
+生成学生批改结果
+(results/*.txt)
+        │
+        ▼
+本地审阅界面
+(review_app.py)
+        │
+        ▼
+人工确认并提交
+```
+
+## 界面预览
+
+审阅界面采用三栏布局，适合人工快速复核：
+
+```text
+┌──────────────┬──────────────────────────────┬──────────────────────┐
+│ 学生列表     │ 作业图片预览                 │ 批注编辑区           │
+│              │                              │                      │
+│ 1025...张三  │ page_1.png                   │ 题目1：过程基本正确   │
+│ 1025...李四  │ page_2.png                   │ 题目2：缺少关键步骤   │
+│ 1025...王五  │ page_3.png                   │ 总评：建议复习矩阵运算 │
+│ ...          │ 图片区域可独立滚动           │ Ctrl+S / Cmd+S 保存  │
+└──────────────┴──────────────────────────────┴──────────────────────┘
+```
+
+审阅时可以一边看原始作业图片，一边直接修改 AI 生成的批注，不需要在多个窗口之间来回切换。
+
 ## 三分钟上手
 
-仓库本身不自带任何现成周次数据。正常使用顺序是：先配置学科，再设置 API Key，再新建一周，最后开始处理作业。
+仓库本身不自带任何现成周次数据。正常使用顺序是：
+
+1. 配置学科
+2. 设置 API Key
+3. 新建一周
+4. 运行前处理、批量评分和人工审阅
 
 ### 1. 配置学科
 
@@ -57,15 +138,8 @@ AI 负责生成批改建议，教师保留最终判断。
 
 ### 2. 安装依赖并设置 API Key
 
-先安装依赖：
-
 ```bash
 pip install -r requirements.txt
-```
-
-进入你的 Python 环境后，设置环境变量：
-
-```bash
 export DASHSCOPE_API_KEY="your_api_key"
 ```
 
@@ -95,22 +169,32 @@ python create_week.py 第二周
 python create_week.py 第二周 --dry-run
 ```
 
-### 4. 按顺序执行任务
+### 4. 放入原始作业
 
-以“第二周”为例：
-
-1. 把平台导出的、已经按学生拆分好的原始提交压缩包逐个放进 `第二周/raw_submissions/`
-2. 填写 `第二周/answer.tex`
-3. 运行前处理
-4. 运行批量评分
-5. 如有需要，打开审阅前端人工修改结果
+把平台导出的、已经按学生拆分好的原始提交压缩包逐个放进 `第二周/raw_submissions/`。
 
 这里放入的通常是总包解压后的学生级压缩包，也就是“一名学生一个 zip”，而不是整班总 zip。
 
-对应命令：
+示例：
+
+```text
+第二周/raw_submissions/
+├── 10254700432-张三.zip
+├── 10254700433-李四.zip
+├── 10254700434-王五.zip
+└── 10254700435-赵六.zip
+```
+
+然后填写标准答案文件：
+
+```text
+第二周/answer.tex
+```
+
+### 5. 执行任务
 
 ```bash
-python run_preprocessing.py --assignment configs/assignments/第二周.json 
+python run_preprocessing.py --assignment configs/assignments/第二周.json --max-workers 4
 python run_batch_grading.py --assignment configs/assignments/第二周.json --max-workers 4
 python review_app.py --assignment configs/assignments/第二周.json --port 8765
 ```
@@ -123,47 +207,75 @@ python review_app.py --assignment configs/assignments/第二周.json --port 8765
 http://127.0.0.1:8765
 ```
 
-## 工作流程
-
-```text
-原始作业 zip
-        │
-        ▼
-预处理脚本
-(run_preprocessing.py)
-        │
-        ▼
-批量 AI 批改
-(run_batch_grading.py)
-        │
-        ▼
-生成学生批改结果
-(results/*.txt)
-        │
-        ▼
-本地审阅界面
-(review_app.py)
-        │
-        ▼
-人工确认并提交
-```
-
-## 目录约定
+## 目录结构示例
 
 以 `第二周/` 为例：
 
-- `第二周/raw_submissions/`
-  - 原始提交压缩包
-- `第二周/processed_images/[学生标识]/page_*.png`
+```text
+第二周/
+├── answer.tex
+├── preprocess_summary.txt
+├── summary.txt
+├── raw_submissions/
+│   ├── 10254700432-张三.zip
+│   └── 10254700433-李四.zip
+├── processed_images/
+│   ├── 10254700432-张三/
+│   │   ├── page_1.png
+│   │   └── page_2.png
+│   └── 10254700433-李四/
+│       ├── page_1.png
+│       └── page_2.png
+└── results/
+    ├── 10254700432-张三.txt
+    └── 10254700433-李四.txt
+```
+
+含义如下：
+
+- `raw_submissions/`
+  - 原始学生提交压缩包
+- `processed_images/[学生标识]/page_*.png`
   - 前处理后的标准化图片
-- `第二周/results/[学生标识].txt`
+- `results/[学生标识].txt`
   - 每个学生单独的评分结果
-- `第二周/preprocess_summary.txt`
+- `preprocess_summary.txt`
   - 前处理汇总
-- `第二周/summary.txt`
+- `summary.txt`
   - 批量评分汇总
-- `第二周/answer.tex`
+- `answer.tex`
   - 本周标准答案
+
+## 输入输出示例
+
+输入示例：
+
+```text
+第二周/raw_submissions/
+├── 10254700432-张三.zip
+├── 10254700433-李四.zip
+├── 10254700434-王五.zip
+└── 10254700435-赵六.zip
+```
+
+输出示例：
+
+```text
+第二周/results/10254700432-张三.txt
+```
+
+```text
+第1题：
+- 得分：8/10
+- 评语：思路正确，但最后一步矩阵乘法有符号错误。
+
+第2题：
+- 得分：10/10
+- 评语：过程完整，结论正确。
+
+总评：
+- 本次作业整体较好，建议继续加强行列式化简的细节检查。
+```
 
 ## 三个主命令分别做什么
 
@@ -231,14 +343,8 @@ python run_batch_grading.py --assignment configs/assignments/第二周.json --re
 这个参数的作用：
 
 - 默认情况下，批量评分脚本会跳过已经存在且非空的 `results/[学生标识].txt`
-- 但有些结果文件其实不是正式评分结果，而是失败后写入的占位结果，里面通常会包含“需人工复核”这类文字
+- 有些结果文件其实不是正式评分结果，而是失败后写入的占位结果，里面通常会包含“需人工复核”这类文字
 - 加上 `--retry-failed` 后，脚本会只针对这类失败占位结果重新评分
-
-适合什么时候用：
-
-- 你修复了 API Key、网络、模型配置、prompt 或上传逻辑之后
-- 你希望把之前失败的学生重新批量跑一遍
-- 你不想手动删除那些失败结果文件
 
 简单理解：
 
@@ -255,17 +361,6 @@ python run_preprocessing.py --assignment configs/assignments/第二周.json --re
 
 - 默认情况下，前处理脚本如果发现某个学生目录里已经有 `page_1.png` 等标准化图片，就会直接跳过
 - 加上 `--reprocess` 后，脚本会重新处理这些学生的原始提交，并覆盖原有的标准化图片
-
-适合什么时候用：
-
-- 你修改了前处理逻辑，想让旧结果按新逻辑重新生成
-- 你发现某些学生的图片顺序、页数或清晰度有问题
-- 你替换了 `raw_submissions/` 中的原始压缩包，想重新产出 `processed_images/`
-
-需要注意：
-
-- 这个操作会覆盖该周已有的标准化图片
-- 它不会自动删除 `results/*.txt`，所以如果你重新生成了图片，通常还要再决定是否重跑评分
 
 简单理解：
 
