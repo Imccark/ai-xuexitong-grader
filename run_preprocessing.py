@@ -63,8 +63,6 @@ def natural_sort_key(name: str) -> list:
 
 def parse_student_id(raw_path: Path) -> str:
     stem = raw_path.stem
-    if "-" in stem:
-        stem = stem.rsplit("-", 1)[0]
     return sanitize_filename(stem)
 
 
