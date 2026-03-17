@@ -18,7 +18,8 @@ AI-powered grader for Xuexitong assignments
 
 ## Quick Start
 
-首次使用时，先配置 `configs/subjects.json` 和 `prompts/default_prompt.txt`，再设置 API Key，然后执行下面三步：
+首次使用时，先配置 `configs/subjects.json` 和 `prompts/default_prompt.txt`，
+再设置 API Key`export DASHSCOPE_API_KEY="your_api_key"`，然后执行下面三步：
 
 ```bash
 python create_week.py 第二周
