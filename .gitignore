@@ -17,3 +17,4 @@ __pycache__/
 # OS/editor noise
 .DS_Store
 Thumbs.db
+configs/assignments/第一周.json

@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from project_config import AssignmentConfig, load_runtime_config
+from run_batch_grading import parse_result_text
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,13 +43,17 @@ class ReviewRepository:
             return students
 
         for student_dir in sorted(path for path in self.processed_dir.iterdir() if path.is_dir()):
-            result_path = self.results_dir / f"{student_dir.name}.txt"
+            result_txt_path = self.results_dir / f"{student_dir.name}.txt"
+            result_json_path = self.results_dir / f"{student_dir.name}.json"
             page_count = len(self.get_image_paths(student_dir.name))
             students.append(
                 {
                     "id": student_dir.name,
                     "pageCount": page_count,
-                    "hasResult": result_path.exists() and result_path.stat().st_size > 0,
+                    "hasResult": (
+                        (result_json_path.exists() and result_json_path.stat().st_size > 0)
+                        or (result_txt_path.exists() and result_txt_path.stat().st_size > 0)
+                    ),
                 }
             )
         return students
@@ -65,21 +70,93 @@ class ReviewRepository:
     def get_result_path(self, student_id: str) -> Path:
         return self.results_dir / f"{student_id}.txt"
 
+    def get_result_json_path(self, student_id: str) -> Path:
+        return self.results_dir / f"{student_id}.json"
+
+    def load_result_json(self, student_id: str) -> dict:
+        json_path = self.get_result_json_path(student_id)
+        if json_path.exists() and json_path.stat().st_size > 0:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            return self.enrich_result_json(payload)
+
+        txt_path = self.get_result_path(student_id)
+        txt_content = txt_path.read_text(encoding="utf-8") if txt_path.exists() else ""
+        if txt_content.strip():
+            return parse_result_text(txt_content, self.assignment_config.subject.output_format)
+        return {
+            "student_name_or_id": student_id,
+            "overall": "",
+            "modules": {},
+            "error_details_by_question": {},
+            "proof_review_by_question": {},
+        }
+
+    def enrich_result_json(self, result_json: dict, rendered_text: str | None = None) -> dict:
+        safe_payload = result_json if isinstance(result_json, dict) else {}
+        text = rendered_text if isinstance(rendered_text, str) else self.render_result_text(safe_payload)
+        parsed = parse_result_text(text, self.assignment_config.subject.output_format)
+
+        student_name = safe_payload.get("student_name_or_id")
+        overall = safe_payload.get("overall")
+        modules = safe_payload.get("modules")
+
+        return {
+            "student_name_or_id": student_name if isinstance(student_name, str) else parsed.get("student_name_or_id", ""),
+            "overall": overall if isinstance(overall, str) else parsed.get("overall", ""),
+            "modules": modules if isinstance(modules, dict) else parsed.get("modules", {}),
+            "error_details_by_question": parsed.get("error_details_by_question", {}),
+            "proof_review_by_question": parsed.get("proof_review_by_question", {}),
+        }
+
+    def render_result_text(self, result_json: dict) -> str:
+        student_name = result_json.get("student_name_or_id", "")
+        overall = result_json.get("overall", "")
+        modules = result_json.get("modules", {})
+        lines = [
+            "========================================",
+            f"姓名/学号：{student_name}",
+            f"整体情况：{overall}",
+        ]
+        if isinstance(modules, dict):
+            for title, block in modules.items():
+                lines.append(f"{title}：")
+                items: list[str] = []
+                if isinstance(block, dict):
+                    raw_items = block.get("items", [])
+                    if isinstance(raw_items, list):
+                        items = [str(item).strip() for item in raw_items if str(item).strip()]
+                    if not items:
+                        raw_text = str(block.get("raw_text", "")).strip()
+                        if raw_text:
+                            items = [raw_text]
+                elif isinstance(block, str) and block.strip():
+                    items = [block.strip()]
+                if items:
+                    for index, item in enumerate(items, start=1):
+                        lines.append(f"{index}. {item}")
+                else:
+                    lines.append("1. ")
+        lines.append("========================================")
+        return "\n".join(lines) + "\n"
+
     def get_student_payload(self, student_id: str) -> dict:
-        result_path = self.get_result_path(student_id)
-        result_text = result_path.read_text(encoding="utf-8") if result_path.exists() else ""
         image_paths = self.get_image_paths(student_id)
         images = [f"/images/{student_id}/{path.name}" for path in image_paths]
+        result_json = self.load_result_json(student_id)
         return {
             "id": student_id,
             "images": images,
-            "resultText": result_text,
+            "resultJson": result_json,
         }
 
-    def save_result(self, student_id: str, content: str) -> None:
+    def save_result(self, student_id: str, result_json: dict, rendered_text: str | None = None) -> None:
         self.results_dir.mkdir(parents=True, exist_ok=True)
+        text = rendered_text if isinstance(rendered_text, str) else self.render_result_text(result_json)
+        enriched_payload = self.enrich_result_json(result_json, rendered_text=text)
+        json_path = self.get_result_json_path(student_id)
+        json_path.write_text(json.dumps(enriched_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         result_path = self.get_result_path(student_id)
-        result_path.write_text(content, encoding="utf-8")
+        result_path.write_text(text, encoding="utf-8")
 
     def resolve_ui_asset(self, asset_name: str) -> Path:
         asset_path = (self.ui_dir / asset_name).resolve()
@@ -149,12 +226,16 @@ def create_handler(repository: ReviewRepository):
                 content_length = int(self.headers.get("Content-Length", "0"))
                 raw_body = self.rfile.read(content_length)
                 payload = json.loads(raw_body.decode("utf-8"))
-                content = payload.get("content", "")
-                if not isinstance(content, str):
-                    self.send_error(HTTPStatus.BAD_REQUEST, "content must be string")
+                result_json = payload.get("resultJson")
+                rendered_text = payload.get("renderedText")
+                if not isinstance(result_json, dict):
+                    self.send_error(HTTPStatus.BAD_REQUEST, "resultJson must be object")
+                    return
+                if rendered_text is not None and not isinstance(rendered_text, str):
+                    self.send_error(HTTPStatus.BAD_REQUEST, "renderedText must be string")
                     return
 
-                repository.save_result(student_id, content)
+                repository.save_result(student_id, result_json, rendered_text)
                 self.send_json({"ok": True})
             except FileNotFoundError as exc:
                 self.send_error(HTTPStatus.NOT_FOUND, str(exc))

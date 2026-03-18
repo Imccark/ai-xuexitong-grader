@@ -4,12 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>作业审阅台</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div id="appShell" class="app-shell">
       <aside class="sidebar">
         <div class="sidebar-header">
+          <button id="toggleSidebarBtn" class="sidebar-toggle-btn" type="button" title="隐藏左栏" aria-label="隐藏左栏">◀</button>
           <p class="eyebrow">Homework Review</p>
           <h1>作业审阅台</h1>
           <p id="studentCount" class="muted">加载中...</p>
@@ -20,7 +22,7 @@
         <div id="studentList" class="student-list"></div>
       </aside>
 
-      <main class="main-layout">
+      <main id="mainLayout" class="main-layout">
         <section class="images-panel">
           <div class="panel-header">
             <div>
@@ -34,13 +36,18 @@
           </div>
         </section>
 
+        <div id="mainResizeHandle" class="panel-resize-handle" role="separator" aria-orientation="vertical" aria-label="调整中间两栏宽度"></div>
+
         <section class="editor-panel">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Evaluation</p>
               <h2>批注编辑</h2>
             </div>
-            <div id="saveStatus" class="save-status">未保存</div>
+            <div class="status-actions">
+              <button id="exportImageBtn" class="export-image-btn" type="button">导出图片</button>
+              <div id="saveStatus" class="save-status">未保存</div>
+            </div>
           </div>
 
           <div class="editor-actions">
@@ -49,14 +56,19 @@
             <button id="saveBtn" class="primary" type="button">保存</button>
           </div>
 
-          <textarea
-            id="resultEditor"
-            placeholder="这里显示并编辑该学生的评价结果。"
-          ></textarea>
+          <div id="modulesContainer" class="modules-container">
+            <div class="empty-state">左侧选择一个学生后，这里会显示结构化评价模块。</div>
+          </div>
         </section>
       </main>
+      <button id="restoreSidebarBtn" class="restore-sidebar-btn is-gone" type="button" title="恢复左栏" aria-label="恢复左栏">▶</button>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script src="/assets/app.js"></script>
   </body>
 </html>
