@@ -18,22 +18,33 @@ AI-powered grader for Xuexitong assignments
 
 ## Quick Start
 
-首次使用时，先配置 `configs/subjects.json` 和 `prompts/default_prompt.txt`，
-再在控制台点击“配置 API Key”保存到本地环境文件 `configs/env/local.env`，然后执行下面三步：
+先选一种使用方式：
 
-```bash
-python create_week.py 第二周
-python run_preprocessing.py --assignment configs/assignments/第二周.json 
-python run_batch_grading.py --assignment configs/assignments/第二周.json --max-workers 4
+- 控制台优先（推荐新手）：
+  1. 启动 UI
+  2. 浏览器打开 `http://127.0.0.1:8765`
+  3. 在控制台里完成 API Key、建周、前处理、批改、批阅
+  
+```powershell
+python review_app.py --port 8765
 ```
 
-审阅与人工修改：
+- 命令行优先（推荐技术用户）：
+  1. `create_week`
+  2. `run_preprocessing`
+  3. `run_batch_grading`
+  4. `review_app`
 
 ```bash
-python review_app.py --assignment configs/assignments/第二周.json --port 8765
+python3 create_week.py 第二周
+python3 run_preprocessing.py --assignment configs/assignments/第二周.json --max-workers 4
+python3 run_batch_grading.py --assignment configs/assignments/第二周.json --max-workers 4
+python3 review_app.py --assignment configs/assignments/第二周.json --port 8765
 ```
 
-浏览器打开：
+完整的 Windows/macOS/Linux 分步教程请看：[`三分钟上手（双路径）`](#三分钟上手双路径)。
+
+控制台地址：
 
 ```text
 http://127.0.0.1:8765
@@ -158,118 +169,187 @@ API Key 配置：
 - 提供 Linux/PowerShell/CMD 命令一键复制
 - 运行脚本时优先读取系统环境变量，未设置时自动回退到本地 `local.env`
 
-## 三分钟上手
+## 三分钟上手（双路径）
 
-仓库本身不自带任何现成周次数据。正常使用顺序是：
+本项目现在支持两种使用方式：
 
-1. 配置学科
-2. 设置 API Key
-3. 新建一周
-4. 运行前处理、批量评分和人工审阅
+- A 路线（推荐新手）：以**前端控制台**为主，命令行只负责启动。
+- B 路线（推荐技术用户）：以 **bash/PowerShell 命令**为主，控制台用于最终审阅。
 
-### 1. 配置学科
+先看下面“通用准备”，然后按你偏好的路线走。
+
+### 通用准备（A/B 都要做）
+
+#### 0. 安装 Python
+
+建议安装 **Python 3.10+**。
+
+- Windows：到 https://www.python.org/downloads/windows/ 下载，安装时勾选 `Add python.exe to PATH`
+- macOS：到 https://www.python.org/downloads/macos/ 下载（或用 Homebrew）
+
+验证：
+
+```powershell
+python --version
+```
+
+```bash
+python3 --version
+```
+
+#### 1. 先进入项目目录（很重要）
+
+后面所有命令都默认在项目根目录执行（能看到 `README.md`、`requirements.txt`）。
+
+Windows PowerShell：
+
+```powershell
+cd D:\你的路径\ai-xuexitong-grader-clean
+```
+
+macOS / Linux bash：
+
+```bash
+cd /你的路径/ai-xuexitong-grader-clean
+```
+
+#### 2. 安装依赖
+
+Windows PowerShell：
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+macOS / Linux bash：
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+#### 3. 配置学科（两条路线共用）
 
 先检查并修改：
 
 - `configs/subjects.json`
 - `prompts/default_prompt.txt`
 
-你至少需要确认这些内容：
+至少确认：
 
-- `subject_name`
-  - 这门课的名称，例如“线性代数”或“高等数学”
-- `model`
-  - 实际调用的大模型名称
-- `api_key_env`
-  - API Key 对应的环境变量名；如果这里写的是 `DASHSCOPE_API_KEY`，后面就要设置这个环境变量
-- `prompt_template`
-  - 评分提示词模板文件路径；默认是 `prompts/default_prompt.txt`
-- `grading_requirements`
-  - 你希望模型特别注意的评分要求
-- `output_format`
-  - 最终评分结果的固定输出格式；这里决定 `results/*.txt` 长什么样
+- `subject_name`：课程名（如“线性代数”）
+- `model`：调用的模型名
+- `api_key_env`：API Key 环境变量名（如 `DASHSCOPE_API_KEY`）
+- `grading_requirements`：评分重点
+- `output_format`：输出格式（决定 `results/*.txt` 与结构化解析）
 
-如果你要换成别的科目，优先修改这两个文件，而不是直接改 Python 代码。
+---
 
-### 2. 安装依赖并设置 API Key
+### A 路线：前端控制台优先（推荐新手）
 
-```bash
-pip install -r requirements.txt
+#### A-1. 启动控制台
+
+Windows PowerShell：
+
+```powershell
+python review_app.py --port 8765
 ```
 
-推荐方式：启动 `review_app.py` 后，在控制台点击“配置 API Key”，把 key 保存到 `configs/env/local.env`。
-
-脚本会优先读取系统环境变量；若未设置，则自动读取本地环境文件。
-
-如果你更习惯手动设置环境变量，也可以继续使用：
+macOS / Linux bash：
 
 ```bash
-export DASHSCOPE_API_KEY="your_api_key"
+python3 review_app.py --port 8765
 ```
 
-### 3. 新建一周
+浏览器打开：
 
-例如新建“第二周”：
+```text
+http://127.0.0.1:8765
+```
 
-```bash
+#### A-2. 在控制台按顺序操作
+
+1. 点击“配置 API Key”，保存到 `configs/env/local.env`
+2. 在 Prompt/subjects 配置区确认学科配置
+3. 新增一周（如“第二周”）
+4. 把学生 zip 放进 `第二周/raw_submissions/`，并准备 `第二周/answer.tex`
+5. 在控制台启动前处理任务和批改任务
+6. 切到“批阅”页面做人工复核，必要时手改并保存
+
+说明：脚本会优先读取系统环境变量；未设置时自动回退到本地 `configs/env/local.env`。
+
+---
+
+### B 路线：命令行 / bash 优先（推荐技术用户）
+
+#### B-1. 新建一周
+
+Windows PowerShell：
+
+```powershell
 python create_week.py 第二周
 ```
 
-脚本会自动创建：
-
-- `第二周/`
-- `第二周/raw_submissions/`
-- `第二周/processed_images/`
-- `第二周/results/`
-- `第二周/temp_workspace/`
-- `第二周/answer.tex`
-- `configs/assignments/第二周.json`
-
-只预览、不实际创建：
+macOS / Linux bash：
 
 ```bash
-python create_week.py 第二周 --dry-run
+python3 create_week.py 第二周
 ```
 
-### 4. 放入原始作业
+#### B-2. 放入原始作业与标准答案
 
-把平台导出的、已经按学生拆分好的原始提交压缩包逐个放进 `第二周/raw_submissions/`。
-
-这里放入的通常是总包解压后的学生级压缩包，也就是“一名学生一个 zip”，而不是整班总 zip。
-
-示例：
+把平台导出的、已按学生拆分好的 zip 放进：
 
 ```text
 第二周/raw_submissions/
-├── 10254700432-张三.zip
-├── 10254700433-李四.zip
-├── 10254700434-王五.zip
-└── 10254700435-赵六.zip
 ```
 
-然后填写标准答案文件：
+并填写：
 
 ```text
 第二周/answer.tex
 ```
 
-### 5. 执行任务
+#### B-3. 运行前处理与批改
 
-```bash
+Windows PowerShell：
+
+```powershell
 python run_preprocessing.py --assignment configs/assignments/第二周.json --max-workers 4
 python run_batch_grading.py --assignment configs/assignments/第二周.json --max-workers 4
+```
+
+macOS / Linux bash：
+
+```bash
+python3 run_preprocessing.py --assignment configs/assignments/第二周.json --max-workers 4
+python3 run_batch_grading.py --assignment configs/assignments/第二周.json --max-workers 4
+```
+
+#### B-4. 启动审阅 UI 做人工复核
+
+Windows PowerShell：
+
+```powershell
 python review_app.py --assignment configs/assignments/第二周.json --port 8765
 ```
 
-`--max-workers` 可以手动调整，例如改成 `3` 也可以，取决于 API 并发限制和你的电脑性能。
+macOS / Linux bash：
 
-也可以直接在控制台页面启动前处理/批改任务，参数会自动绑定当前选中周。
+```bash
+python3 review_app.py --assignment configs/assignments/第二周.json --port 8765
+```
 
-最后在浏览器打开：
+浏览器打开：
 
 ```text
 http://127.0.0.1:8765
 ```
+
+补充：
+
+- `--max-workers` 可按机器和 API 限流调整（例如 `3`）
+- 需要全量重跑可用 `--regrade`
+- 只想从 UI 启动任务，也可先仅执行 `review_app.py`
 
 ## 目录结构示例
 
