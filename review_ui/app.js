@@ -531,11 +531,23 @@ function autoResizeTextarea(textarea) {
   textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
-function renderMarkdownLatex(rawText, previewEl) {
+function containsMatrixExpression(expr) {
+  const source = String(expr || "");
+  return /\\begin\{(?:matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|array|cases|aligned|smallmatrix)\}/.test(source);
+}
+
+function renderMarkdownLatex(rawText, previewEl, options = {}) {
   if (!previewEl) {
     return;
   }
-  const source = String(rawText || "");
+  const preferDisplayForMatrices = Boolean(options.preferDisplayForMatrices);
+  const source = String(rawText || "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
+    .replace(/=\u0338/g, "≠")
+    .replace(/<\u0338/g, "≮")
+    .replace(/>\u0338/g, "≯");
   const tokens = [];
   let tokenIndex = 0;
   const pushToken = (expr, displayMode) => {
@@ -546,8 +558,16 @@ function renderMarkdownLatex(rawText, previewEl) {
 
   // 先抽离公式，避免 Markdown 解析破坏 LaTeX 内容。
   const sourceWithTokens = source
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, expr) => pushToken(expr, true))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, expr) => {
+      const displayMode = preferDisplayForMatrices && containsMatrixExpression(expr);
+      return pushToken(expr, displayMode);
+    })
     .replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => pushToken(expr, true))
-    .replace(/\$([^\n$]+?)\$/g, (_, expr) => pushToken(expr, false));
+    .replace(/\$([^\n$]+?)\$/g, (_, expr) => {
+      const displayMode = preferDisplayForMatrices && containsMatrixExpression(expr);
+      return pushToken(expr, displayMode);
+    });
 
   if (typeof marked === "undefined") {
     previewEl.textContent = source;
@@ -571,6 +591,7 @@ function renderMarkdownLatex(rawText, previewEl) {
       const rendered = katex.renderToString(token.expr, {
         displayMode: token.displayMode,
         throwOnError: false,
+        strict: "ignore",
       });
       safeHtml = safeHtml.replaceAll(token.key, rendered);
     });
@@ -960,8 +981,8 @@ function buildExportSnapshotNode(payload) {
         itemWrap.appendChild(idx);
 
         const preview = document.createElement("div");
-        preview.className = "item-preview";
-        renderMarkdownLatex(item, preview);
+        preview.className = "export-item-content";
+        renderMarkdownLatex(item, preview, { preferDisplayForMatrices: true });
         itemWrap.appendChild(preview);
 
         card.appendChild(itemWrap);
@@ -984,6 +1005,7 @@ async function exportAnnotationsAsImage() {
 
   const payload = getCurrentPayloadFromUI();
   const snapshotNode = buildExportSnapshotNode(payload);
+  const hasMath = Boolean(snapshotNode.querySelector(".katex"));
   const host = document.createElement("div");
   host.className = "export-render-host";
   host.appendChild(snapshotNode);
@@ -991,12 +1013,43 @@ async function exportAnnotationsAsImage() {
 
   updateSaveStatus("导出中...");
   try {
-    const canvas = await html2canvas(snapshotNode, {
+    if (document.fonts && document.fonts.ready) {
+      const fontTasks = [document.fonts.ready];
+      if (hasMath && typeof document.fonts.load === "function") {
+        fontTasks.push(document.fonts.load("16px KaTeX_Main"));
+        fontTasks.push(document.fonts.load("16px KaTeX_Math"));
+        fontTasks.push(document.fonts.load("16px KaTeX_Size1"));
+      }
+      await Promise.race([
+        Promise.allSettled(fontTasks),
+        new Promise((resolve) => window.setTimeout(resolve, hasMath ? 1100 : 420)),
+      ]);
+    }
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    const rect = snapshotNode.getBoundingClientRect();
+    const dpr = Number(window.devicePixelRatio || 1);
+    const exportScale = hasMath ? Math.min(2.2, Math.max(1.7, dpr * 1.2)) : Math.min(1.6, Math.max(1.2, dpr));
+    const renderOptions = {
       backgroundColor: "#fffdfa",
-      scale: window.devicePixelRatio > 1 ? 2 : 1.5,
+      scale: exportScale,
       useCORS: true,
       logging: false,
-    });
+      scrollX: 0,
+      scrollY: 0,
+      imageTimeout: 0,
+      removeContainer: true,
+      windowWidth: Math.ceil(rect.width + 40),
+      windowHeight: Math.ceil(rect.height + 40),
+    };
+    let canvas = null;
+    // 对含 KaTeX 的内容，canvas 渲染通常更接近当前页面已应用的公式样式；
+    // foreignObject 在外链样式场景下可能丢失 KaTeX 规则，导致看起来像“未编译”。
+    const preferForeignObject = false;
+    try {
+      canvas = await html2canvas(snapshotNode, { ...renderOptions, foreignObjectRendering: preferForeignObject });
+    } catch (firstError) {
+      canvas = await html2canvas(snapshotNode, { ...renderOptions, foreignObjectRendering: !preferForeignObject });
+    }
 
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) {

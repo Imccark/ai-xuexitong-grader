@@ -1151,9 +1151,11 @@ button.primary {
 
 .export-render-host {
   position: fixed;
-  left: -10000px;
+  left: 0;
   top: 0;
   width: 1200px;
+  opacity: 0;
+  z-index: -1;
   pointer-events: none;
 }
 
@@ -1164,7 +1166,9 @@ button.primary {
   border: 1px solid rgba(72, 52, 42, 0.14);
   border-radius: 18px;
   padding: 24px;
-  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI Symbol", "Noto Sans Math", "Cambria Math", sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 .export-snapshot h2 {
@@ -1209,6 +1213,81 @@ button.primary {
   font-size: 16px;
   color: var(--muted);
   padding-top: 10px;
+}
+
+.export-item-content {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  font-size: 17px;
+  line-height: 1.68;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  font-kerning: normal;
+  font-variant-ligatures: none;
+}
+
+.export-item-content .katex {
+  font-size: 1.12em;
+  line-height: 1.26;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.export-item-content .katex-display {
+  margin: 0.48em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+}
+
+.export-item-content .katex,
+.export-item-content .katex * {
+  font-kerning: auto;
+  font-variant-ligatures: normal;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+
+.export-item-content .katex-display > .katex {
+  display: inline-block;
+  min-width: fit-content;
+}
+
+.export-item-content > :first-child {
+  margin-top: 0;
+}
+
+.export-item-content > :last-child {
+  margin-bottom: 0;
+}
+
+.export-item-content p,
+.export-item-content li,
+.export-item-content strong,
+.export-item-content em,
+.export-item-content span,
+.export-item-content code {
+  line-height: inherit;
+}
+
+.export-item-content p {
+  margin: 0;
+}
+
+.export-item-content p + p {
+  margin-top: 0.72em;
+}
+
+.export-item-content ul,
+.export-item-content ol {
+  margin: 0.56em 0 0.56em 1.15em;
+  padding: 0;
 }
 
 .empty-state {

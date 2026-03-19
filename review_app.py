@@ -247,7 +247,9 @@ def create_week_resources(week_name: str, force: bool = False) -> dict:
 
 def try_open_path(path: Path) -> tuple[bool, str | None]:
     try:
+        runtime_platform = str(sys.platform or "").lower()
         is_wsl = "microsoft" in os.uname().release.lower() if hasattr(os, "uname") else False
+        is_windows_runtime = os.name == "nt" or runtime_platform.startswith("win") or runtime_platform.startswith("msys") or runtime_platform.startswith("cygwin")
         if is_wsl:
             windows_path = str(path)
             try:
@@ -258,9 +260,23 @@ def try_open_path(path: Path) -> tuple[bool, str | None]:
                 pass
             subprocess.Popen(["explorer.exe", windows_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True, None
-        if os.name == "nt":
-            os.startfile(str(path))  # type: ignore[attr-defined]
-            return True, None
+        if is_windows_runtime:
+            start_error: Exception | None = None
+            if hasattr(os, "startfile"):
+                try:
+                    os.startfile(str(path))  # type: ignore[attr-defined]
+                    return True, None
+                except Exception as exc:
+                    start_error = exc
+            for command in (["explorer.exe", str(path)], ["explorer", str(path)]):
+                try:
+                    subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return True, None
+                except Exception as exc:
+                    start_error = exc
+            if start_error is not None:
+                return False, str(start_error)
+            return False, "无法调用 Windows 打开命令"
         if sys.platform == "darwin":
             subprocess.Popen(["open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True, None
@@ -299,6 +315,20 @@ def get_directory_created_timestamp(path: Path) -> float:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent
+
+
+def _ui_root() -> Path:
+    return _repo_root() / "review_ui"
+
+
+def _resolve_ui_asset(asset_name: str) -> Path:
+    ui_root = _ui_root().resolve()
+    asset_path = (ui_root / asset_name).resolve()
+    if ui_root not in asset_path.parents and asset_path != ui_root:
+        raise FileNotFoundError("非法资源路径")
+    if not asset_path.is_file():
+        raise FileNotFoundError(asset_name)
+    return asset_path
 
 
 def _assignment_path_from_week_id(week_id: str) -> Path:
@@ -481,8 +511,7 @@ def create_handler():
             return {"weeks": weeks, "currentWeekId": current_week_id}
 
         def _read_prompt_file(self) -> dict:
-            repo = _repository
-            prompt_path = (repo.ui_dir.parent / "prompts" / "default_prompt.txt").resolve()
+            prompt_path = (_repo_root() / "prompts" / "default_prompt.txt").resolve()
             if not prompt_path.is_file():
                 self.send_error(HTTPStatus.NOT_FOUND, "prompt file not found")
                 return
@@ -495,10 +524,9 @@ def create_handler():
                 self.send_error(HTTPStatus.BAD_REQUEST, "empty body")
                 return
             content = raw_body.decode("utf-8")
-            repo = _repository
-            prompt_path = (repo.ui_dir.parent / "prompts" / "default_prompt.txt").resolve()
+            prompt_path = (_repo_root() / "prompts" / "default_prompt.txt").resolve()
             # 安全检查：确保路径在仓库内
-            repo_root = repo.ui_dir.parent.resolve()
+            repo_root = _repo_root().resolve()
             if repo_root not in prompt_path.resolve().parents and prompt_path.resolve() != repo_root:
                 self.send_json({"error": "forbidden path"}, status=HTTPStatus.FORBIDDEN)
                 return
@@ -506,9 +534,8 @@ def create_handler():
             self.send_json({"ok": True, "path": "prompts/default_prompt.txt"})
 
         def _reset_prompt_file(self) -> None:
-            repo = _repository
-            prompt_path = (repo.ui_dir.parent / "prompts" / "default_prompt.txt").resolve()
-            prompt_default_path = (repo.ui_dir.parent / "prompts" / "default_prompt.default.txt").resolve()
+            prompt_path = (_repo_root() / "prompts" / "default_prompt.txt").resolve()
+            prompt_default_path = (_repo_root() / "prompts" / "default_prompt.default.txt").resolve()
             if not prompt_default_path.is_file():
                 self.send_json({"error": "default prompt template not found"}, status=HTTPStatus.NOT_FOUND)
                 return
@@ -517,8 +544,7 @@ def create_handler():
             self.send_json({"ok": True, "content": content, "path": "prompts/default_prompt.txt"})
 
         def _read_subjects_json(self) -> dict:
-            repo = _repository
-            subjects_path = (repo.ui_dir.parent / "configs" / "subjects.json").resolve()
+            subjects_path = (_repo_root() / "configs" / "subjects.json").resolve()
             if not subjects_path.is_file():
                 self.send_error(HTTPStatus.NOT_FOUND, "subjects.json not found")
                 return
@@ -535,9 +561,8 @@ def create_handler():
             except json.JSONDecodeError as exc:
                 self.send_json({"error": f"JSON format error: {exc}"}, status=HTTPStatus.BAD_REQUEST)
                 return
-            repo = _repository
-            subjects_path = (repo.ui_dir.parent / "configs" / "subjects.json").resolve()
-            repo_root = repo.ui_dir.parent.resolve()
+            subjects_path = (_repo_root() / "configs" / "subjects.json").resolve()
+            repo_root = _repo_root().resolve()
             if repo_root not in subjects_path.resolve().parents and subjects_path.resolve() != repo_root:
                 self.send_json({"error": "forbidden path"}, status=HTTPStatus.FORBIDDEN)
                 return
@@ -545,8 +570,7 @@ def create_handler():
             self.send_json({"ok": True})
 
         def _read_api_key(self, parsed_url) -> None:
-            repo = _repository
-            subjects_path = (repo.ui_dir.parent / "configs" / "subjects.json").resolve()
+            subjects_path = (_repo_root() / "configs" / "subjects.json").resolve()
             env_name = ""
             try:
                 if subjects_path.is_file():
@@ -801,24 +825,30 @@ def create_handler():
                 repo = _repository
 
                 if path == "/" or path == "/index.html":
-                    self.serve_file(repo.resolve_ui_asset("index.html"))
+                    self.serve_file(_resolve_ui_asset("index.html"))
                     return
                 if path == "/assets/style.css":
-                    self.serve_file(repo.resolve_ui_asset("style.css"))
+                    self.serve_file(_resolve_ui_asset("style.css"))
                     return
                 if path == "/assets/app.js":
-                    self.serve_file(repo.resolve_ui_asset("app.js"))
+                    self.serve_file(_resolve_ui_asset("app.js"))
                     return
                 if path == "/api/weeks":
                     self.send_json(self._list_weeks_payload())
                     return
                 if path == "/api/students":
-                    self.send_json({"students": repo.list_students()})
+                    if repo is None:
+                        self.send_json({"students": []})
+                    else:
+                        self.send_json({"students": repo.list_students()})
                     return
                 if path == "/api/student/":
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
                 if path.startswith("/api/student/"):
+                    if repo is None:
+                        self.send_json({"error": "当前未加载作业周，请先在控制台选择周并进入批阅"}, status=HTTPStatus.CONFLICT)
+                        return
                     student_id = unquote(path[len("/api/student/"):])
                     self.send_json(repo.get_student_payload(student_id))
                     return
@@ -842,6 +872,9 @@ def create_handler():
                     self._get_pipeline_task_detail(parsed)
                     return
                 if path.startswith("/images/"):
+                    if repo is None:
+                        self.send_error(HTTPStatus.NOT_FOUND, "当前未加载作业周")
+                        return
                     parts = [unquote(part) for part in path.split("/") if part]
                     if len(parts) != 3:
                         self.send_error(HTTPStatus.NOT_FOUND)
@@ -910,6 +943,11 @@ def create_handler():
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
 
+                repo = _repository
+                if repo is None:
+                    self.send_json({"error": "当前未加载作业周，请先在控制台选择周并进入批阅"}, status=HTTPStatus.CONFLICT)
+                    return
+
                 student_id = unquote(path[len("/api/student/"):])
                 content_length = int(self.headers.get("Content-Length", "0"))
                 raw_body = self.rfile.read(content_length)
@@ -970,30 +1008,37 @@ def create_handler():
 
 def main() -> int:
     args = parse_args()
+    assignment_config: AssignmentConfig | None = None
     try:
         assignment_config = load_runtime_config(assignment=args.assignment, week=args.week)
     except ValueError as exc:
         if args.assignment or args.week:
             raise SystemExit(str(exc))
         assignment_paths = list_assignment_config_paths()
-        if not assignment_paths:
-            raise SystemExit(str(exc))
-        assignment_config = load_assignment_config(sorted(assignment_paths)[0])
-    week_dir = assignment_config.week_dir
-    if not week_dir.is_dir():
-        raise SystemExit(f"周目录不存在：{week_dir}")
+        if assignment_paths:
+            assignment_config = load_assignment_config(sorted(assignment_paths)[0])
 
     global _repository
-    _repository = ReviewRepository(assignment_config)
-    if not _repository.processed_dir.is_dir():
-        raise SystemExit(f"标准化图片目录不存在：{_repository.processed_dir}")
+    _repository = None
+    if assignment_config is not None:
+        week_dir = assignment_config.week_dir
+        if week_dir.is_dir():
+            _repository = ReviewRepository(assignment_config)
+        else:
+            print(f"[WARN] 周目录不存在，先以控制台模式启动：{week_dir}")
 
     handler = create_handler()
     server = ThreadingHTTPServer((args.host, args.port), handler)
-    print(
-        f"Review app running at http://{args.host}:{args.port} | "
-        f"{assignment_config.assignment_id} | {assignment_config.subject.subject_name} | {assignment_config.week_name}"
-    )
+    if assignment_config is not None:
+        print(
+            f"Review app running at http://{args.host}:{args.port} | "
+            f"{assignment_config.assignment_id} | {assignment_config.subject.subject_name} | {assignment_config.week_name}"
+        )
+    else:
+        print(
+            f"Review app running at http://{args.host}:{args.port} | "
+            "未加载作业周（可在控制台新增/选择周后进入批阅）"
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
