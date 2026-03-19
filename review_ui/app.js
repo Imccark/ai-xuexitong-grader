@@ -190,6 +190,45 @@ function runWhenIdle(callback, timeout = 300) {
   window.setTimeout(() => callback(), Math.min(120, timeout));
 }
 
+function isCanvasBlank(canvas) {
+  if (!(canvas instanceof HTMLCanvasElement)) {
+    return true;
+  }
+  const width = canvas.width;
+  const height = canvas.height;
+  if (!width || !height) {
+    return true;
+  }
+
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return false;
+  }
+
+  const samplePoints = [
+    [0.1, 0.1],
+    [0.5, 0.1],
+    [0.9, 0.1],
+    [0.1, 0.5],
+    [0.5, 0.5],
+    [0.9, 0.5],
+    [0.1, 0.9],
+    [0.5, 0.9],
+    [0.9, 0.9],
+  ];
+
+  for (const [xRatio, yRatio] of samplePoints) {
+    const x = Math.max(0, Math.min(width - 1, Math.floor(width * xRatio)));
+    const y = Math.max(0, Math.min(height - 1, Math.floor(height * yRatio)));
+    const pixel = context.getImageData(x, y, 1, 1).data;
+    if (pixel[3] > 0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function fetchJson(url, options) {
   return fetch(url, options).then(async (response) => {
     const raw = await response.text();
@@ -623,6 +662,184 @@ function containsMatrixExpression(expr) {
   return /\\begin\{(?:matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|array|cases|aligned|smallmatrix)\}/.test(source);
 }
 
+function splitLatexTopLevel(source, separator) {
+  const parts = [];
+  let buffer = "";
+  let braceDepth = 0;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+
+    if (char === "\\") {
+      if (separator === "\\\\" && next === "\\" && braceDepth === 0) {
+        parts.push(buffer.trim());
+        buffer = "";
+        index += 1;
+        while (/\s/.test(source[index + 1] || "")) {
+          index += 1;
+        }
+        if ((source[index + 1] || "") === "[") {
+          let offset = index + 2;
+          let optionDepth = 1;
+          while (offset < source.length && optionDepth > 0) {
+            const optionChar = source[offset];
+            if (optionChar === "[") {
+              optionDepth += 1;
+            } else if (optionChar === "]") {
+              optionDepth -= 1;
+            }
+            offset += 1;
+          }
+          index = Math.max(index, offset - 1);
+        }
+        continue;
+      }
+
+      buffer += char;
+      if (typeof next === "string") {
+        buffer += next;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (separator === "&" && char === "&" && braceDepth === 0) {
+      parts.push(buffer.trim());
+      buffer = "";
+      continue;
+    }
+
+    if (char === "{") {
+      braceDepth += 1;
+    } else if (char === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+    }
+
+    buffer += char;
+  }
+
+  parts.push(buffer.trim());
+  return parts;
+}
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function normalizeMatrixCellLatex(cellText) {
+  const value = String(cellText || "").trim();
+  if (!value) {
+    return "\\phantom{0}";
+  }
+  if (/^(?:\.{3,}|\\dots|\\ldots|\\cdots)$/i.test(value)) {
+    return "\\cdots";
+  }
+  return value;
+}
+
+function renderInlineLatexFragment(expr) {
+  try {
+    return katex.renderToString(expr, {
+      displayMode: false,
+      throwOnError: false,
+      strict: "ignore",
+    });
+  } catch (error) {
+    return escapeHtml(expr);
+  }
+}
+
+function parseRenderableMatrix(expr) {
+  const source = String(expr || "").trim();
+  let env = "";
+  let body = "";
+  let delimiter = "none";
+
+  const bareMatrix = source.match(/^\\begin\{(matrix|pmatrix|bmatrix|smallmatrix)\}([\s\S]*)\\end\{\1\}$/);
+  if (bareMatrix) {
+    env = bareMatrix[1];
+    body = String(bareMatrix[2] || "").trim();
+  } else {
+    const wrappedArray = source.match(
+      /^\\left([\(\[])\s*\\begin\{array\}(?:\{[^}]*\})?([\s\S]*)\\end\{array\}\s*\\right([\)\]])$/,
+    );
+    const bareArray = source.match(/^\\begin\{array\}(?:\{[^}]*\})?([\s\S]*)\\end\{array\}$/);
+    if (wrappedArray) {
+      env = "array";
+      body = String(wrappedArray[2] || "").trim();
+      delimiter = wrappedArray[1] === "[" && wrappedArray[3] === "]" ? "bracket" : "paren";
+    } else if (bareArray) {
+      env = "array";
+      body = String(bareArray[1] || "").trim();
+      delimiter = "none";
+    } else {
+      return null;
+    }
+  }
+
+  if (!body) {
+    return null;
+  }
+
+  const rows = splitLatexTopLevel(body, "\\\\")
+    .map((row) => splitLatexTopLevel(row, "&").map((cell) => String(cell || "").trim()))
+    .filter((row) => row.some(Boolean));
+  if (!rows.length) {
+    return null;
+  }
+
+  const columnCount = Math.max(1, ...rows.map((row) => row.length || 1));
+  const delimiterByEnv = {
+    matrix: "none",
+    smallmatrix: "none",
+    pmatrix: "paren",
+    bmatrix: "bracket",
+    array: delimiter || "none",
+  };
+
+  return {
+    rows,
+    columnCount,
+    delimiter: delimiterByEnv[env] || "none",
+  };
+}
+
+function renderCustomMatrix(expr, displayMode) {
+  const parsed = parseRenderableMatrix(expr);
+  if (!parsed) {
+    return null;
+  }
+
+  const rowsHtml = parsed.rows
+    .map((row) => {
+      const singleEllipsisRow = row.length === 1 && /^(?:\.{3,}|\\dots|\\ldots|\\cdots)$/i.test(row[0] || "");
+      const cellsHtml = singleEllipsisRow
+        ? `<span class="rendered-matrix__cell rendered-matrix__cell--ellipsis" style="grid-column: 1 / span ${parsed.columnCount};">${renderInlineLatexFragment("\\cdots")}</span>`
+        : row
+            .map((cell) => `<span class="rendered-matrix__cell">${renderInlineLatexFragment(normalizeMatrixCellLatex(cell))}</span>`)
+            .join("");
+
+      return `<span class="rendered-matrix__row" style="--matrix-cols: ${parsed.columnCount};">${cellsHtml}</span>`;
+    })
+    .join("");
+
+  const matrixHtml = `
+    <span class="rendered-matrix rendered-matrix--${parsed.delimiter}">
+      <span class="rendered-matrix__delim rendered-matrix__delim--left" aria-hidden="true"></span>
+      <span class="rendered-matrix__body">${rowsHtml}</span>
+      <span class="rendered-matrix__delim rendered-matrix__delim--right" aria-hidden="true"></span>
+    </span>
+  `.trim();
+
+  return displayMode ? `<span class="math-block math-block--matrix">${matrixHtml}</span>` : matrixHtml;
+}
+
 function renderMarkdownLatex(rawText, previewEl, options = {}) {
   if (!previewEl) {
     return;
@@ -639,7 +856,13 @@ function renderMarkdownLatex(rawText, previewEl, options = {}) {
   let tokenIndex = 0;
   const pushToken = (expr, displayMode) => {
     const key = `@@MATH_${tokenIndex++}@@`;
-    tokens.push({ key, expr: String(expr || ""), displayMode });
+    const normalizedExpr = String(expr || "");
+    tokens.push({
+      key,
+      expr: normalizedExpr,
+      displayMode,
+      isMatrix: containsMatrixExpression(normalizedExpr),
+    });
     return key;
   };
 
@@ -675,12 +898,17 @@ function renderMarkdownLatex(rawText, previewEl, options = {}) {
   // 优先使用 katex.renderToString（不依赖 auto-render）。
   if (typeof katex !== "undefined" && typeof katex.renderToString === "function") {
     tokens.forEach((token) => {
-      const rendered = katex.renderToString(token.expr, {
-        displayMode: token.displayMode,
-        throwOnError: false,
-        strict: "ignore",
-      });
-      safeHtml = safeHtml.replaceAll(token.key, rendered);
+      const customMatrix = token.isMatrix ? renderCustomMatrix(token.expr, token.displayMode) : null;
+      const rendered = customMatrix
+        ? customMatrix
+        : katex.renderToString(token.expr, {
+            displayMode: token.displayMode,
+            throwOnError: false,
+            strict: "ignore",
+          });
+      const wrappedRendered =
+        customMatrix || !token.displayMode ? rendered : `<span class="math-block${token.isMatrix ? " math-block--matrix" : ""}">${rendered}</span>`;
+      safeHtml = safeHtml.replaceAll(token.key, wrappedRendered);
     });
     previewEl.innerHTML = safeHtml;
     return;
@@ -735,7 +963,7 @@ function applyRowMode(row) {
   } else {
     previewEl.classList.remove("is-hidden");
     textarea.classList.add("is-hidden");
-    renderMarkdownLatex(itemState.rawText, previewEl);
+    renderMarkdownLatex(itemState.rawText, previewEl, { preferDisplayForMatrices: true });
     toggleBtn.textContent = "✎";
     toggleBtn.title = "编辑";
     toggleBtn.setAttribute("aria-label", "编辑");
@@ -1081,6 +1309,19 @@ function buildExportSnapshotNode(payload) {
   return container;
 }
 
+function buildExportStrategies({ baseScale }) {
+  return [
+    {
+      foreignObjectRendering: false,
+      scale: baseScale,
+    },
+    {
+      foreignObjectRendering: true,
+      scale: Math.min(baseScale, 1.6),
+    },
+  ];
+}
+
 async function blobToClipboardOrDownload(blob, fileName) {
   const canWriteClipboard =
     Boolean(navigator.clipboard) && typeof window.ClipboardItem !== "undefined" && document.hasFocus();
@@ -1191,7 +1432,7 @@ async function exportAnnotationsAsImage() {
     host.appendChild(snapshotNode);
     document.body.appendChild(host);
 
-    await waitForStableFrames(2);
+    await waitForStableFrames(hasMath ? 4 : 2);
 
     const rect = snapshotNode.getBoundingClientRect();
     const dpr = Number(window.devicePixelRatio || 1);
@@ -1209,10 +1450,7 @@ async function exportAnnotationsAsImage() {
       windowHeight: Math.ceil(rect.height + 24),
     };
 
-    const strategies = [
-      { foreignObjectRendering: false, scale: baseScale },
-      { foreignObjectRendering: true, scale: Math.min(baseScale, 1.6) },
-    ];
+    const strategies = buildExportStrategies({ baseScale });
 
     let canvas = null;
     let lastError = null;
@@ -1221,9 +1459,10 @@ async function exportAnnotationsAsImage() {
     for (const strategy of strategies) {
       try {
         canvas = await html2canvas(snapshotNode, { ...baseOptions, ...strategy });
-        if (canvas) {
+        if (canvas && !(strategy.foreignObjectRendering && isCanvasBlank(canvas))) {
           break;
         }
+        canvas = null;
       } catch (error) {
         lastError = error;
       }
