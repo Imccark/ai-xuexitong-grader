@@ -1151,12 +1151,13 @@ button.primary {
 
 .export-render-host {
   position: fixed;
-  left: 0;
+  left: -20000px;
   top: 0;
   width: 1200px;
-  opacity: 0;
+  opacity: 1;
   z-index: -1;
   pointer-events: none;
+  contain: layout paint style;
 }
 
 .export-snapshot {
@@ -1167,8 +1168,10 @@ button.primary {
   border-radius: 18px;
   padding: 24px;
   font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI Symbol", "Noto Sans Math", "Cambria Math", sans-serif;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
+  text-rendering: auto;
+  -webkit-font-smoothing: auto;
+  line-height: 1.58;
+  letter-spacing: 0;
 }
 
 .export-snapshot h2 {
@@ -1222,25 +1225,49 @@ button.primary {
   padding: 10px 12px;
   background: #fff;
   font-size: 17px;
-  line-height: 1.68;
+  line-height: 1.62;
   white-space: normal;
   word-break: break-word;
-  overflow-wrap: anywhere;
-  text-rendering: geometricPrecision;
-  -webkit-font-smoothing: antialiased;
-  font-kerning: normal;
-  font-variant-ligatures: none;
+  overflow-wrap: break-word;
+  text-rendering: auto;
+  -webkit-font-smoothing: auto;
+  font-kerning: auto;
+  font-variant-ligatures: normal;
+}
+
+.export-item-content > *:first-child {
+  margin-top: 0;
+}
+
+.export-item-content > *:last-child {
+  margin-bottom: 0;
+}
+
+.export-item-content p {
+  margin: 0 0 0.56em;
+  line-height: 1.62;
+}
+
+.export-item-content ul,
+.export-item-content ol {
+  margin: 0.2em 0 0.62em 1.25em;
+  padding: 0;
+}
+
+.export-item-content li {
+  margin: 0.15em 0;
+  line-height: 1.6;
 }
 
 .export-item-content .katex {
   font-size: 1.12em;
-  line-height: 1.26;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
+  line-height: 1.2;
+  text-rendering: auto;
+  -webkit-font-smoothing: auto;
 }
 
 .export-item-content .katex-display {
-  margin: 0.48em 0;
+  margin: 0.72em 0;
   overflow-x: auto;
   overflow-y: hidden;
   padding-bottom: 2px;
@@ -1256,15 +1283,7 @@ button.primary {
 
 .export-item-content .katex-display > .katex {
   display: inline-block;
-  min-width: fit-content;
-}
-
-.export-item-content > :first-child {
-  margin-top: 0;
-}
-
-.export-item-content > :last-child {
-  margin-bottom: 0;
+  min-width: max-content;
 }
 
 .export-item-content p,
@@ -1274,20 +1293,6 @@ button.primary {
 .export-item-content span,
 .export-item-content code {
   line-height: inherit;
-}
-
-.export-item-content p {
-  margin: 0;
-}
-
-.export-item-content p + p {
-  margin-top: 0.72em;
-}
-
-.export-item-content ul,
-.export-item-content ol {
-  margin: 0.56em 0 0.56em 1.15em;
-  padding: 0;
 }
 
 .empty-state {

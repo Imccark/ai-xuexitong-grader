@@ -833,6 +833,10 @@ def create_handler():
                 if path == "/assets/app.js":
                     self.serve_file(_resolve_ui_asset("app.js"))
                     return
+                if path.startswith("/assets/vendor/"):
+                    vendor_asset = path[len("/assets/"):]
+                    self.serve_file(_resolve_ui_asset(vendor_asset))
+                    return
                 if path == "/api/weeks":
                     self.send_json(self._list_weeks_payload())
                     return

@@ -24,6 +24,10 @@ const state = {
   pipelineStatusByTaskId: {},
   pipelinePolling: false,
   pipelinePollTimer: null,
+  isExporting: false,
+  exportPrewarmScheduled: false,
+  exportPrewarmed: false,
+  exportPrewarmAttempted: false,
 };
 const ITEM_MUTABLE_MODULE_KEYWORDS = ["错误细节", "证明题审查", "改进建议"];
 
@@ -103,6 +107,88 @@ const copyApiCmdCmdBtnEl = document.getElementById("copyApiCmdCmdBtn");
 
 const SIDEBAR_COLLAPSED_KEY = "review_ui_sidebar_collapsed";
 const MAIN_LEFT_WIDTH_KEY = "review_ui_main_left_width";
+const EXPORT_RESOURCE_TIMEOUT_MS = 8000;
+
+function setExportButtonBusy(isBusy, label) {
+  if (!exportImageBtnEl) {
+    return;
+  }
+  exportImageBtnEl.disabled = Boolean(isBusy);
+  exportImageBtnEl.textContent = label || (isBusy ? "导出中..." : "导出图片");
+}
+
+function getExportResourceState() {
+  const missing = [];
+
+  if (typeof html2canvas !== "function") {
+    missing.push("html2canvas");
+  }
+  if (typeof marked === "undefined" || typeof marked.parse !== "function") {
+    missing.push("marked");
+  }
+  if (typeof DOMPurify === "undefined" || typeof DOMPurify.sanitize !== "function") {
+    missing.push("DOMPurify");
+  }
+  if (typeof katex === "undefined" || typeof katex.renderToString !== "function") {
+    missing.push("katex");
+  }
+  if (!document.fonts || typeof document.fonts.ready?.then !== "function") {
+    missing.push("document.fonts");
+  } else if (document.fonts.status !== "loaded") {
+    missing.push("fonts:not_loaded");
+  } else {
+    const katexFonts = ["KaTeX_Main", "KaTeX_Math", "KaTeX_Size1"];
+    const missingKatexFonts = katexFonts.filter((name) => !document.fonts.check(`16px ${name}`));
+    if (missingKatexFonts.length) {
+      missing.push(`katex_fonts:${missingKatexFonts.join(",")}`);
+    }
+  }
+
+  return {
+    ready: missing.length === 0,
+    missing,
+  };
+}
+
+async function waitForExportResources(timeoutMs = EXPORT_RESOURCE_TIMEOUT_MS) {
+  if (document.fonts && typeof document.fonts.load === "function") {
+    try {
+      await Promise.allSettled([
+        document.fonts.load("16px KaTeX_Main"),
+        document.fonts.load("16px KaTeX_Math"),
+        document.fonts.load("16px KaTeX_Size1"),
+      ]);
+    } catch (error) {
+      window.console.warn("warm fonts failed", error);
+    }
+  }
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const stateNow = getExportResourceState();
+    if (stateNow.ready) {
+      return { ok: true, missing: [] };
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+  }
+
+  const finalState = getExportResourceState();
+  return { ok: false, missing: finalState.missing };
+}
+
+async function waitForStableFrames(frameCount = 2) {
+  for (let index = 0; index < Math.max(1, frameCount); index += 1) {
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+  }
+}
+
+function runWhenIdle(callback, timeout = 300) {
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(() => callback(), { timeout });
+    return;
+  }
+  window.setTimeout(() => callback(), Math.min(120, timeout));
+}
 
 function fetchJson(url, options) {
   return fetch(url, options).then(async (response) => {
@@ -367,6 +453,7 @@ function switchView(viewName) {
 
   if (viewName === "review") {
     initLayoutControls();
+    prewarmExportPipeline();
   } else if (viewName === "dashboard") {
     loadWeeks().catch((error) => {
       if (weekCountEl) {
@@ -994,61 +1081,156 @@ function buildExportSnapshotNode(payload) {
   return container;
 }
 
+async function blobToClipboardOrDownload(blob, fileName) {
+  const canWriteClipboard =
+    Boolean(navigator.clipboard) && typeof window.ClipboardItem !== "undefined" && document.hasFocus();
+
+  if (canWriteClipboard) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      return { mode: "clipboard" };
+    } catch (error) {
+      const message = String(error?.message || "");
+      const focusError =
+        error?.name === "NotAllowedError" || /Document is not focused|focus/i.test(message);
+      if (!focusError) {
+        throw error;
+      }
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return { mode: "download" };
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200);
+  }
+}
+
+async function prewarmExportPipeline() {
+  if (state.exportPrewarmScheduled || state.exportPrewarmAttempted) {
+    return;
+  }
+  state.exportPrewarmScheduled = true;
+  state.exportPrewarmAttempted = true;
+
+  runWhenIdle(async () => {
+    let host = null;
+    try {
+      const readyState = await waitForExportResources(2500);
+      if (!readyState.ok || typeof html2canvas !== "function") {
+        return;
+      }
+
+      host = document.createElement("div");
+      host.className = "export-render-host";
+      const prewarmNode = document.createElement("div");
+      prewarmNode.className = "export-snapshot";
+      prewarmNode.style.width = "320px";
+      prewarmNode.innerHTML = '<p class="export-overall">warm up \\(x_1 + x_2 = 0\\)</p>';
+      renderMarkdownLatex("warm up \\(x_1 + x_2 = 0\\)", prewarmNode, { preferDisplayForMatrices: true });
+      host.appendChild(prewarmNode);
+      document.body.appendChild(host);
+
+      await waitForStableFrames(2);
+      await html2canvas(prewarmNode, {
+        backgroundColor: "#fffdfa",
+        scale: 1,
+        logging: false,
+        useCORS: false,
+        imageTimeout: 500,
+        removeContainer: true,
+        foreignObjectRendering: false,
+      });
+      state.exportPrewarmed = true;
+    } catch (error) {
+      window.console.warn("export prewarm failed", error);
+    } finally {
+      if (host) {
+        host.remove();
+      }
+      state.exportPrewarmScheduled = false;
+    }
+  }, 700);
+}
+
 async function exportAnnotationsAsImage() {
   if (!state.currentStudentId) {
+    window.alert("请先选择一位学生，再导出图片。");
     return;
   }
-  if (typeof html2canvas !== "function") {
-    window.alert("缺少 html2canvas，无法导出图片。");
+  if (state.isExporting) {
     return;
   }
 
-  const payload = getCurrentPayloadFromUI();
-  const snapshotNode = buildExportSnapshotNode(payload);
-  const hasMath = Boolean(snapshotNode.querySelector(".katex"));
-  const host = document.createElement("div");
-  host.className = "export-render-host";
-  host.appendChild(snapshotNode);
-  document.body.appendChild(host);
+  state.isExporting = true;
+  setExportButtonBusy(true, "准备导出...");
+  updateSaveStatus("导出准备中...");
 
-  updateSaveStatus("导出中...");
+  let host = null;
   try {
-    if (document.fonts && document.fonts.ready) {
-      const fontTasks = [document.fonts.ready];
-      if (hasMath && typeof document.fonts.load === "function") {
-        fontTasks.push(document.fonts.load("16px KaTeX_Main"));
-        fontTasks.push(document.fonts.load("16px KaTeX_Math"));
-        fontTasks.push(document.fonts.load("16px KaTeX_Size1"));
-      }
-      await Promise.race([
-        Promise.allSettled(fontTasks),
-        new Promise((resolve) => window.setTimeout(resolve, hasMath ? 1100 : 420)),
-      ]);
+    const resourceState = await waitForExportResources();
+    if (!resourceState.ok) {
+      updateSaveStatus("导出资源未就绪");
+      window.alert(`导出资源仍在加载，请稍后再试。\n缺失项：${resourceState.missing.join(", ") || "未知"}`);
+      return;
     }
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+
+    const payload = getCurrentPayloadFromUI();
+    const snapshotNode = buildExportSnapshotNode(payload);
+    const hasMath = Boolean(snapshotNode.querySelector(".katex"));
+
+    host = document.createElement("div");
+    host.className = "export-render-host";
+    host.appendChild(snapshotNode);
+    document.body.appendChild(host);
+
+    await waitForStableFrames(2);
+
     const rect = snapshotNode.getBoundingClientRect();
     const dpr = Number(window.devicePixelRatio || 1);
-    const exportScale = hasMath ? Math.min(2.2, Math.max(1.7, dpr * 1.2)) : Math.min(1.6, Math.max(1.2, dpr));
-    const renderOptions = {
+    const baseScale = hasMath ? Math.min(2.0, Math.max(1.5, dpr)) : Math.min(1.6, Math.max(1.2, dpr * 0.95));
+    const baseOptions = {
       backgroundColor: "#fffdfa",
-      scale: exportScale,
+      scale: baseScale,
       useCORS: true,
       logging: false,
       scrollX: 0,
       scrollY: 0,
-      imageTimeout: 0,
+      imageTimeout: 1000,
       removeContainer: true,
-      windowWidth: Math.ceil(rect.width + 40),
-      windowHeight: Math.ceil(rect.height + 40),
+      windowWidth: Math.ceil(rect.width + 24),
+      windowHeight: Math.ceil(rect.height + 24),
     };
+
+    const strategies = [
+      { foreignObjectRendering: false, scale: baseScale },
+      { foreignObjectRendering: true, scale: Math.min(baseScale, 1.6) },
+    ];
+
     let canvas = null;
-    // 对含 KaTeX 的内容，canvas 渲染通常更接近当前页面已应用的公式样式；
-    // foreignObject 在外链样式场景下可能丢失 KaTeX 规则，导致看起来像“未编译”。
-    const preferForeignObject = false;
-    try {
-      canvas = await html2canvas(snapshotNode, { ...renderOptions, foreignObjectRendering: preferForeignObject });
-    } catch (firstError) {
-      canvas = await html2canvas(snapshotNode, { ...renderOptions, foreignObjectRendering: !preferForeignObject });
+    let lastError = null;
+    updateSaveStatus("导出中...");
+    setExportButtonBusy(true, "导出中...");
+    for (const strategy of strategies) {
+      try {
+        canvas = await html2canvas(snapshotNode, { ...baseOptions, ...strategy });
+        if (canvas) {
+          break;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (!canvas) {
+      throw lastError || new Error("导出失败：未生成图像画布");
     }
 
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
@@ -1056,18 +1238,23 @@ async function exportAnnotationsAsImage() {
       throw new Error("生成 PNG 失败");
     }
 
-    if (!navigator.clipboard || typeof window.ClipboardItem === "undefined") {
-      throw new Error("当前浏览器不支持写入图片到剪贴板");
+    const fileName = `${state.currentStudentId || "annotations"}-${Date.now()}.png`;
+    const output = await blobToClipboardOrDownload(blob, fileName);
+    if (output.mode === "clipboard") {
+      updateSaveStatus("图片已复制");
+    } else {
+      updateSaveStatus("已下载 PNG");
     }
-
-    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-    updateSaveStatus("图片已复制");
-    window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1500);
+    window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
   } catch (error) {
     updateSaveStatus("导出失败");
-    window.alert(error.message || "导出失败");
+    window.alert(error?.message || "导出失败");
   } finally {
-    host.remove();
+    if (host) {
+      host.remove();
+    }
+    state.isExporting = false;
+    setExportButtonBusy(false, "导出图片");
   }
 }
 
@@ -1077,7 +1264,20 @@ async function loadStudents() {
   state.filteredStudents = data.students;
   renderStudentList();
   if (data.students.length) {
-    await loadStudent(data.students[0].id, true);
+    const firstStudentId = data.students[0].id;
+    const loadFirstStudent = () => {
+      if (state.currentStudentId) {
+        return;
+      }
+      loadStudent(firstStudentId, true).catch((error) => {
+        window.console.warn("load first student failed", error);
+      });
+    };
+    if (state.currentView === "dashboard" || state.currentView === null) {
+      runWhenIdle(loadFirstStudent, 450);
+    } else {
+      await loadStudent(firstStudentId, true);
+    }
   }
 }
 
@@ -2269,3 +2469,4 @@ initPromptAndSubjectsPanels();
 initLayoutControls();
 initNavTabs();
 enterDashboardWithConfigInit();
+prewarmExportPipeline();
