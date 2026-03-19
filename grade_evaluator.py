@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-from project_config import SubjectConfig, load_runtime_config, load_subject_config
+from project_config import LOCAL_ENV_FILE, SubjectConfig, load_runtime_config, load_subject_config, resolve_api_key
 
 
 DEFAULT_OUTPUT_DIR_NAME = "results"
@@ -178,7 +178,9 @@ def evaluate_homework_qwen_vision(
     reasoning_log_path: str | None = None,
 ) -> bool:
     resolved_subject_config = subject_config or load_subject_config()
-    api_key = os.getenv(resolved_subject_config.api_key_env)
+    api_key, api_key_source = resolve_api_key(resolved_subject_config.api_key_env)
+    if api_key and api_key_source == "local_env":
+        os.environ[resolved_subject_config.api_key_env] = api_key
     resolved_output_dir = ensure_result_dir(output_dir, tex_path)
     result_path = get_student_result_path(student_name, resolved_output_dir)
 
@@ -187,8 +189,11 @@ def evaluate_homework_qwen_vision(
             student_name,
             resolved_output_dir,
             "判卷脚本调用失败，需人工复核",
-            [f"缺失 {resolved_subject_config.api_key_env} 环境变量。"],
-            [f"请先正确设置 {resolved_subject_config.api_key_env} 后再重新处理该学生作业。"],
+            [f"缺失 {resolved_subject_config.api_key_env}。"],
+            [
+                f"请先在控制台配置 API Key，或设置系统环境变量 {resolved_subject_config.api_key_env}。"
+                f"本地环境文件：{LOCAL_ENV_FILE}"
+            ],
         )
         print(f"[ERROR] {student_name} 缺失 API Key")
         return False

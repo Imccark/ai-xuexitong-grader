@@ -8,6 +8,207 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
+    <!-- 控制台视图 -->
+    <section class="view-section dashboard-view is-hidden" data-view="dashboard">
+      <div class="dashboard-shell">
+        <aside class="dashboard-sidebar">
+          <div class="sidebar-header">
+            <p class="eyebrow">Dashboard</p>
+            <h1>控制台概览</h1>
+            <p id="weekCount" class="muted"></p>
+            <div class="nav-tabs">
+              <button class="nav-tab" data-view="dashboard" type="button">控制台</button>
+              <button class="nav-tab is-active" data-view="review" type="button">批阅</button>
+            </div>
+          </div>
+          <div id="weekSelector" class="week-selector">
+            <div class="week-manage-box">
+              <label class="week-manage-label" for="newWeekNameInput">新增一周</label>
+              <div class="week-manage-actions">
+                <input id="newWeekNameInput" type="text" placeholder="例如：第三周" />
+                <button id="createWeekBtn" type="button" class="week-manage-btn">创建</button>
+              </div>
+              <p id="weekManageStatus" class="week-manage-status"></p>
+            </div>
+            <div id="weekButtons" class="week-buttons"></div>
+          </div>
+        </aside>
+
+        <main class="dashboard-main">
+          <div class="dashboard-content">
+            <div class="dashboard-grid" id="dashboardGrid">
+              <article class="dashboard-card dashboard-summary-card" id="cardCurrentWeek">
+                <div class="dashboard-card-content dashboard-summary-content" id="currentWeekCardContent">
+                  <p class="dashboard-stat-placeholder">当前未选择周</p>
+                </div>
+              </article>
+              <article class="dashboard-card dashboard-summary-card" id="cardWeekResource">
+                <div class="dashboard-card-content dashboard-summary-content" id="weekResourceCardContent">
+                  <p class="dashboard-stat-placeholder">先在左侧选中一周</p>
+                </div>
+              </article>
+              <article class="dashboard-card dashboard-summary-card" id="cardDeleteWeek">
+                <div class="dashboard-card-content dashboard-summary-content" id="deleteWeekCardContent">
+                  <p class="dashboard-stat-placeholder">提供两种删除方式</p>
+                </div>
+              </article>
+              <article class="dashboard-card dashboard-summary-card" id="cardPreprocessTask">
+                <h3>前处理任务</h3>
+                <div class="dashboard-card-content dashboard-summary-content" id="preprocessTaskCardContent">
+                  <p class="dashboard-stat-placeholder">先在左侧选中一周</p>
+                </div>
+              </article>
+              <article class="dashboard-card dashboard-summary-card" id="cardDashboardLogs">
+                <h3>统计信息</h3>
+                <div class="dashboard-card-content dashboard-summary-content" id="dashboardLogsContent">
+                  <p class="dashboard-stat-placeholder">日志会显示在这里</p>
+                </div>
+              </article>
+              <article class="dashboard-card dashboard-summary-card" id="cardGradingTask">
+                <h3>批改任务</h3>
+                <div class="dashboard-card-content dashboard-summary-content" id="gradingTaskCardContent">
+                  <p class="dashboard-stat-placeholder">先在左侧选中一周</p>
+                </div>
+              </article>
+              <article class="dashboard-card dashboard-card-full">
+                <h3>Prompt 模板</h3>
+                <div class="config-card-wrap">
+                  <p class="config-description">用于控制 AI 批改语气、关注点和最终输出风格。</p>
+                  <div class="config-meta-grid">
+                    <div class="config-meta-item">
+                      <span>模板文件</span>
+                      <strong id="promptFileName">prompts/default_prompt.txt</strong>
+                    </div>
+                    <div class="config-meta-item">
+                      <span>状态</span>
+                      <strong id="promptStateLabel">未加载</strong>
+                    </div>
+                  </div>
+                  <div class="config-editor-actions">
+                    <button id="viewPromptBtn" type="button" class="config-btn">查看模板</button>
+                    <button id="editPromptBtn" type="button" class="config-btn">编辑模板</button>
+                    <button id="savePromptBtn" type="button" class="config-btn primary">保存模板</button>
+                    <button id="resetPromptBtn" type="button" class="config-btn">恢复默认</button>
+                    <span id="promptSaveStatus" class="config-status"></span>
+                  </div>
+                  <div id="promptEditorPanel" class="config-panel is-hidden">
+                    <p class="config-hint">
+                      可以修改批改语气、输出格式、要求；不建议删除系统占位符：
+                      <code>{subject_name}</code> <code>{standard_answer}</code>
+                      <code>{grading_requirements}</code> <code>{output_format}</code>
+                    </p>
+                    <textarea
+                      id="promptEditor"
+                      class="config-textarea"
+                      rows="12"
+                      placeholder="点击“查看模板”或“编辑模板”加载内容"
+                    ></textarea>
+                  </div>
+                </div>
+              </article>
+              <article class="dashboard-card dashboard-card-full">
+                <h3>subjects.json 配置</h3>
+                <div class="config-card-wrap">
+                  <p class="config-description">默认使用表单编辑，尽量降低误改 JSON 的风险。</p>
+                  <div class="config-editor-actions">
+                    <button id="loadSubjectsBtn" type="button" class="config-btn">读取配置</button>
+                    <button id="saveSubjectsFormBtn" type="button" class="config-btn primary">保存配置</button>
+                    <button id="toggleSubjectsJsonBtn" type="button" class="config-btn">高级 JSON 编辑</button>
+                    <button id="saveSubjectsJsonBtn" type="button" class="config-btn">保存 JSON</button>
+                    <span id="subjectsSaveStatus" class="config-status"></span>
+                  </div>
+                  <div id="subjectsFormPanel" class="config-panel">
+                    <div class="config-form-grid">
+                      <label class="config-field">
+                        <span>subject_id</span>
+                        <small>学科标识，建议英文下划线命名。</small>
+                        <input id="subjectIdInput" type="text" />
+                      </label>
+                      <label class="config-field">
+                        <span>subject_name</span>
+                        <small>学科显示名，例如“线性代数”。</small>
+                        <input id="subjectNameInput" type="text" />
+                      </label>
+                      <label class="config-field">
+                        <span>model</span>
+                        <small>实际调用的模型名称。</small>
+                        <input id="subjectModelInput" type="text" />
+                      </label>
+                      <label class="config-field">
+                        <span>base_url</span>
+                        <small>模型服务 API 基础地址。</small>
+                        <input id="subjectBaseUrlInput" type="text" />
+                      </label>
+                      <label class="config-field config-field-full">
+                        <span>grading_requirements</span>
+                        <small>评分时的重点要求。</small>
+                        <textarea id="subjectGradingRequirementsInput" rows="4"></textarea>
+                      </label>
+                    </div>
+                  </div>
+                  <div id="subjectsJsonPanel" class="config-panel is-hidden">
+                    <p class="config-hint">高级模式：直接编辑原始 JSON，保存前会做格式校验。</p>
+                    <textarea
+                      id="subjectsEditor"
+                      class="config-textarea"
+                      rows="12"
+                      placeholder="点击“读取配置”加载 subjects.json"
+                    ></textarea>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </div>
+        </main>
+      </div>
+    </section>
+
+    <div id="apiKeyModal" class="config-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="apiKeyModalTitle">
+      <div class="config-modal-card">
+        <div class="config-modal-head">
+          <h3 id="apiKeyModalTitle">配置 API Key</h3>
+          <button id="closeApiKeyModalBtn" type="button" class="config-modal-close" aria-label="关闭">
+            <span aria-hidden="true">✕</span>
+          </button>
+        </div>
+        <p class="config-modal-desc">
+          当前 API Key 环境变量：<code id="apiKeyEnvName">DASHSCOPE_API_KEY</code>
+        </p>
+        <p id="apiKeyPlatformHint" class="config-modal-desc"></p>
+        <div class="api-key-editor">
+          <label class="config-field config-field-full">
+            <span>API Key</span>
+            <small>保存在本地文件 `configs/env/local.env`，仅本机使用。</small>
+            <input id="apiKeyInput" type="text" placeholder="粘贴你的 API Key" />
+          </label>
+          <div class="api-key-editor-actions">
+            <button id="saveApiKeyBtn" type="button" class="config-btn primary">保存到本地环境文件</button>
+            <button id="copyApiKeyBtn" type="button" class="config-btn">复制 API Key</button>
+            <span id="apiKeyStatus" class="config-status"></span>
+          </div>
+        </div>
+        <div class="api-key-cmd-grid">
+          <section class="api-key-cmd-block">
+            <h4>Linux / macOS (bash)</h4>
+            <textarea id="apiCmdLinux" readonly rows="2"></textarea>
+            <button id="copyApiCmdLinuxBtn" type="button" class="config-btn">复制 Linux 命令</button>
+          </section>
+          <section class="api-key-cmd-block">
+            <h4>Windows PowerShell</h4>
+            <textarea id="apiCmdPowershell" readonly rows="2"></textarea>
+            <button id="copyApiCmdPowershellBtn" type="button" class="config-btn">复制 PowerShell 命令</button>
+          </section>
+          <section class="api-key-cmd-block">
+            <h4>Windows CMD</h4>
+            <textarea id="apiCmdCmd" readonly rows="2"></textarea>
+            <button id="copyApiCmdCmdBtn" type="button" class="config-btn">复制 CMD 命令</button>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- 批阅视图 -->
+    <section class="view-section" data-view="review">
     <div id="appShell" class="app-shell">
       <aside class="sidebar">
         <div class="sidebar-header">
@@ -15,6 +216,10 @@
           <p class="eyebrow">Homework Review</p>
           <h1>作业审阅台</h1>
           <p id="studentCount" class="muted">加载中...</p>
+          <div class="nav-tabs">
+            <button class="nav-tab" data-view="dashboard" type="button">控制台</button>
+            <button class="nav-tab is-active" data-view="review" type="button">批阅</button>
+          </div>
         </div>
         <div class="toolbar">
           <input id="studentSearch" type="search" placeholder="搜索学号或姓名" />
@@ -63,6 +268,7 @@
       </main>
       <button id="restoreSidebarBtn" class="restore-sidebar-btn is-gone" type="button" title="恢复左栏" aria-label="恢复左栏">▶</button>
     </div>
+    </section>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>

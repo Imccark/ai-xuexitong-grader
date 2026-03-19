@@ -1,12 +1,29 @@
 import argparse
 import json
 import mimetypes
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from project_config import AssignmentConfig, load_runtime_config
+from create_week import build_assignment_payload, write_json
+from project_config import (
+    LOCAL_ENV_FILE,
+    AssignmentConfig,
+    get_local_env_var,
+    is_valid_env_name,
+    list_assignment_config_paths,
+    load_assignment_config,
+    load_runtime_config,
+    write_local_env_var,
+)
 from run_batch_grading import parse_result_text
 
 
@@ -176,28 +193,653 @@ class ReviewRepository:
         return image_path
 
 
-def create_handler(repository: ReviewRepository):
+_repository: ReviewRepository | None = None
+_task_lock = threading.Lock()
+_pipeline_tasks: dict[str, dict] = {}
+
+
+def create_week_resources(week_name: str, force: bool = False) -> dict:
+    from project_config import DEFAULT_ANSWER_KEY_FILENAME, REPO_ROOT
+
+    resolved_week_name = week_name.strip()
+    if not resolved_week_name:
+        raise ValueError("week_name 不能为空。")
+
+    new_week_dir = REPO_ROOT / resolved_week_name
+    if new_week_dir.exists() and not force:
+        raise ValueError(f"周目录已存在：{new_week_dir}。")
+
+    assignment_path, assignment_payload = build_assignment_payload(
+        new_week_name=resolved_week_name,
+        new_week_dir=new_week_dir,
+        new_answer_key_name=DEFAULT_ANSWER_KEY_FILENAME,
+    )
+    if assignment_path.exists() and not force:
+        raise ValueError(f"assignment 配置已存在：{assignment_path}。")
+
+    directories = [
+        new_week_dir,
+        new_week_dir / "raw_submissions",
+        new_week_dir / "processed_images",
+        new_week_dir / "results",
+        new_week_dir / "temp_workspace",
+    ]
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+
+    answer_key_path = new_week_dir / DEFAULT_ANSWER_KEY_FILENAME
+    if not answer_key_path.exists():
+        answer_key_path.write_text("% 在这里填写本周标准答案\n", encoding="utf-8")
+
+    for summary_path in [new_week_dir / "preprocess_summary.txt", new_week_dir / "summary.txt"]:
+        if not summary_path.exists():
+            summary_path.write_text("", encoding="utf-8")
+
+    write_json(assignment_path, assignment_payload)
+    return {
+        "weekId": assignment_path.stem,
+        "weekName": resolved_week_name,
+        "assignmentPath": str(assignment_path),
+        "rawSubmissionsPath": str((new_week_dir / "raw_submissions").resolve()),
+        "answerKeyPath": str(answer_key_path.resolve()),
+    }
+
+
+def try_open_path(path: Path) -> tuple[bool, str | None]:
+    try:
+        is_wsl = "microsoft" in os.uname().release.lower() if hasattr(os, "uname") else False
+        if is_wsl:
+            windows_path = str(path)
+            try:
+                converted = subprocess.check_output(["wslpath", "-w", str(path)], text=True).strip()
+                if converted:
+                    windows_path = converted
+            except Exception:
+                pass
+            subprocess.Popen(["explorer.exe", windows_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, None
+        if os.name == "nt":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+            return True, None
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, None
+        subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True, None
+    except FileNotFoundError as exc:
+        return False, f"系统缺少打开命令：{exc}"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_directory_created_timestamp(path: Path) -> float:
+    """
+    跨平台近似目录创建时间：
+    - macOS: 优先 st_birthtime
+    - Windows: st_ctime 即创建时间
+    - Linux/WSL: 通常无 birthtime，回退到 st_mtime（创建后通常最稳定）
+    """
+    try:
+        stat = path.stat()
+    except Exception:
+        return 0.0
+
+    birthtime = getattr(stat, "st_birthtime", None)
+    if isinstance(birthtime, (int, float)) and birthtime > 0:
+        return float(birthtime)
+
+    if os.name == "nt":
+        return float(getattr(stat, "st_ctime", 0.0) or 0.0)
+
+    mtime = float(getattr(stat, "st_mtime", 0.0) or 0.0)
+    if mtime > 0:
+        return mtime
+    return float(getattr(stat, "st_ctime", 0.0) or 0.0)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _assignment_path_from_week_id(week_id: str) -> Path:
+    assignment_path = _repo_root() / "configs" / "assignments" / f"{week_id}.json"
+    if not assignment_path.is_file():
+        raise FileNotFoundError(f"assignment 不存在：{assignment_path.name}")
+    return assignment_path
+
+
+def _pipeline_logs_dir() -> Path:
+    return _repo_root() / "runtime_logs"
+
+
+def _build_pipeline_command(task_name: str, assignment_path: Path, max_workers: int, flag_enabled: bool) -> list[str]:
+    if task_name == "preprocess":
+        cmd = [
+            sys.executable,
+            "-u",
+            "run_preprocessing.py",
+            "--assignment",
+            str(assignment_path),
+            "--max-workers",
+            str(max_workers),
+        ]
+        if flag_enabled:
+            cmd.append("--reprocess")
+        return cmd
+    if task_name == "grading":
+        cmd = [
+            sys.executable,
+            "-u",
+            "run_batch_grading.py",
+            "--assignment",
+            str(assignment_path),
+            "--max-workers",
+            str(max_workers),
+        ]
+        if flag_enabled:
+            cmd.append("--regrade")
+        return cmd
+    raise ValueError(f"不支持的任务类型：{task_name}")
+
+
+def _start_pipeline_task(task_name: str, week_id: str, max_workers: int, flag_enabled: bool) -> dict:
+    if task_name not in {"preprocess", "grading"}:
+        raise ValueError("task 仅支持 preprocess 或 grading")
+    if max_workers < 1:
+        raise ValueError("maxWorkers 必须大于等于 1")
+
+    assignment_path = _assignment_path_from_week_id(week_id)
+    with _task_lock:
+        for existing in _pipeline_tasks.values():
+            if (
+                existing.get("task") == task_name
+                and existing.get("weekId") == week_id
+                and existing.get("status") == "running"
+            ):
+                raise ValueError(f"{week_id} 的 {task_name} 任务正在运行中，请勿重复启动")
+
+    task_id = uuid.uuid4().hex[:12]
+    logs_dir = _pipeline_logs_dir()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / f"{task_name}_{week_id}_{task_id}.log"
+    cmd = _build_pipeline_command(task_name, assignment_path, max_workers, flag_enabled)
+
+    record = {
+        "taskId": task_id,
+        "task": task_name,
+        "weekId": week_id,
+        "status": "running",
+        "maxWorkers": max_workers,
+        "flagEnabled": bool(flag_enabled),
+        "command": cmd,
+        "logPath": str(log_path),
+        "startedAt": time.time(),
+        "endedAt": None,
+        "returnCode": None,
+        "error": None,
+    }
+    with _task_lock:
+        _pipeline_tasks[task_id] = record
+
+    def _runner() -> None:
+        return_code = -1
+        error_message: str | None = None
+        try:
+            with log_path.open("w", encoding="utf-8") as log_file:
+                log_file.write(f"[TASK] {task_name} | week={week_id}\n")
+                log_file.write(f"[CMD] {' '.join(cmd)}\n\n")
+                log_file.flush()
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=str(_repo_root()),
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                )
+                return_code = process.wait()
+        except Exception as exc:
+            error_message = str(exc)
+        finally:
+            with _task_lock:
+                task_record = _pipeline_tasks.get(task_id)
+                if task_record is not None:
+                    task_record["returnCode"] = return_code
+                    task_record["endedAt"] = time.time()
+                    if error_message:
+                        task_record["status"] = "failed"
+                        task_record["error"] = error_message
+                    else:
+                        task_record["status"] = "success" if return_code == 0 else "failed"
+                        if return_code != 0:
+                            task_record["error"] = f"退出码 {return_code}"
+
+    threading.Thread(target=_runner, name=f"task-{task_name}-{task_id}", daemon=True).start()
+    return record
+
+
+def _get_latest_pipeline_task_record(task_name: str, week_id: str) -> dict | None:
+    latest: dict | None = None
+    with _task_lock:
+        for task in _pipeline_tasks.values():
+            if task.get("task") != task_name or task.get("weekId") != week_id:
+                continue
+            if latest is None or float(task.get("startedAt", 0)) > float(latest.get("startedAt", 0)):
+                latest = dict(task)
+    return latest
+
+
+def _get_pipeline_task_record(task_id: str) -> dict | None:
+    with _task_lock:
+        task = _pipeline_tasks.get(task_id)
+        return dict(task) if task else None
+
+
+def _read_pipeline_log_lines(task_record: dict, since_line: int = 0, limit: int = 60) -> tuple[list[str], int]:
+    log_path = Path(str(task_record.get("logPath", "")).strip())
+    if not log_path.is_file():
+        return [], 0
+    all_lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    total = len(all_lines)
+    start = max(0, min(since_line, total))
+    end = min(total, start + max(1, limit))
+    return all_lines[start:end], total
+
+
+def create_handler():
     class ReviewRequestHandler(BaseHTTPRequestHandler):
+        def _list_weeks_payload(self) -> dict:
+            repo = _repository
+            assignment_paths = list(Path(__file__).resolve().parent.glob("configs/assignments/*.json"))
+            weeks: list[dict] = []
+            for assignment_path in assignment_paths:
+                week_id = assignment_path.stem
+                week_name = week_id
+                raw_submissions_path = ""
+                answer_key_path = ""
+                created_at_ts = 0.0
+                try:
+                    cfg = load_assignment_config(assignment_path)
+                    week_name = cfg.week_name
+                    raw_submissions_path = str(cfg.raw_submissions_dir.resolve())
+                    answer_key_path = str(cfg.answer_key_path.resolve())
+                    created_at_ts = get_directory_created_timestamp(cfg.week_dir.resolve())
+                except Exception:
+                    created_at_ts = get_directory_created_timestamp(assignment_path.resolve().parent)
+                weeks.append(
+                    {
+                        "id": week_id,
+                        "name": week_name,
+                        "assignmentPath": str(assignment_path.resolve()),
+                        "rawSubmissionsPath": raw_submissions_path,
+                        "answerKeyPath": answer_key_path,
+                        "createdAt": created_at_ts,
+                    }
+                )
+            weeks.sort(key=lambda item: (float(item.get("createdAt", 0.0) or 0.0), str(item.get("id", ""))))
+            current_week_id = None
+            if repo and repo.assignment_config and repo.assignment_config.assignment_id:
+                current_week_id = repo.assignment_config.assignment_id
+            return {"weeks": weeks, "currentWeekId": current_week_id}
+
+        def _read_prompt_file(self) -> dict:
+            repo = _repository
+            prompt_path = (repo.ui_dir.parent / "prompts" / "default_prompt.txt").resolve()
+            if not prompt_path.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND, "prompt file not found")
+                return
+            content = prompt_path.read_text(encoding="utf-8")
+            self.send_json({"content": content, "path": "prompts/default_prompt.txt"})
+
+        def _write_prompt_file(self, raw_body: bytes) -> None:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            if content_length == 0:
+                self.send_error(HTTPStatus.BAD_REQUEST, "empty body")
+                return
+            content = raw_body.decode("utf-8")
+            repo = _repository
+            prompt_path = (repo.ui_dir.parent / "prompts" / "default_prompt.txt").resolve()
+            # 安全检查：确保路径在仓库内
+            repo_root = repo.ui_dir.parent.resolve()
+            if repo_root not in prompt_path.resolve().parents and prompt_path.resolve() != repo_root:
+                self.send_json({"error": "forbidden path"}, status=HTTPStatus.FORBIDDEN)
+                return
+            prompt_path.write_text(content, encoding="utf-8")
+            self.send_json({"ok": True, "path": "prompts/default_prompt.txt"})
+
+        def _reset_prompt_file(self) -> None:
+            repo = _repository
+            prompt_path = (repo.ui_dir.parent / "prompts" / "default_prompt.txt").resolve()
+            prompt_default_path = (repo.ui_dir.parent / "prompts" / "default_prompt.default.txt").resolve()
+            if not prompt_default_path.is_file():
+                self.send_json({"error": "default prompt template not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            content = prompt_default_path.read_text(encoding="utf-8")
+            prompt_path.write_text(content, encoding="utf-8")
+            self.send_json({"ok": True, "content": content, "path": "prompts/default_prompt.txt"})
+
+        def _read_subjects_json(self) -> dict:
+            repo = _repository
+            subjects_path = (repo.ui_dir.parent / "configs" / "subjects.json").resolve()
+            if not subjects_path.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND, "subjects.json not found")
+                return
+            content = subjects_path.read_text(encoding="utf-8")
+            self.send_json({"content": content})
+
+        def _write_subjects_json(self, raw_body: bytes) -> None:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            if content_length == 0:
+                self.send_error(HTTPStatus.BAD_REQUEST, "empty body")
+                return
+            try:
+                json.loads(raw_body.decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                self.send_json({"error": f"JSON format error: {exc}"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            repo = _repository
+            subjects_path = (repo.ui_dir.parent / "configs" / "subjects.json").resolve()
+            repo_root = repo.ui_dir.parent.resolve()
+            if repo_root not in subjects_path.resolve().parents and subjects_path.resolve() != repo_root:
+                self.send_json({"error": "forbidden path"}, status=HTTPStatus.FORBIDDEN)
+                return
+            subjects_path.write_text(raw_body.decode("utf-8"), encoding="utf-8")
+            self.send_json({"ok": True})
+
+        def _read_api_key(self, parsed_url) -> None:
+            repo = _repository
+            subjects_path = (repo.ui_dir.parent / "configs" / "subjects.json").resolve()
+            env_name = ""
+            try:
+                if subjects_path.is_file():
+                    subjects_data = json.loads(subjects_path.read_text(encoding="utf-8"))
+                    env_name = str(subjects_data.get("api_key_env", "")).strip()
+            except Exception:
+                env_name = ""
+            query_env = parsed_url.query
+            if query_env:
+                for part in query_env.split("&"):
+                    if part.startswith("env="):
+                        env_name = unquote(part.split("=", 1)[1]).strip() or env_name
+                        break
+            if not env_name:
+                env_name = "DASHSCOPE_API_KEY"
+            if not is_valid_env_name(env_name):
+                self.send_json({"error": f"非法环境变量名：{env_name}"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            local_value = get_local_env_var(env_name)
+            self.send_json(
+                {
+                    "ok": True,
+                    "envName": env_name,
+                    "apiKey": local_value,
+                    "hasApiKey": bool(local_value),
+                    "storePath": str(LOCAL_ENV_FILE),
+                }
+            )
+
+        def _write_api_key(self, raw_body: bytes) -> None:
+            try:
+                payload = json.loads(raw_body.decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_json({"error": "invalid json body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            env_name = str(payload.get("envName", "")).strip()
+            api_key = str(payload.get("apiKey", "")).strip()
+            if not env_name:
+                self.send_json({"error": "envName 不能为空"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if not is_valid_env_name(env_name):
+                self.send_json({"error": f"非法环境变量名：{env_name}"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if not api_key:
+                self.send_json({"error": "apiKey 不能为空"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                saved_path = write_local_env_var(env_name, api_key)
+                os.environ[env_name] = api_key
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:
+                self.send_json({"error": f"写入失败：{exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self.send_json(
+                {
+                    "ok": True,
+                    "envName": env_name,
+                    "hasApiKey": True,
+                    "storePath": str(saved_path),
+                }
+            )
+
+        def _create_week(self, raw_body: bytes) -> None:
+            try:
+                payload = json.loads(raw_body.decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_json({"error": "invalid json body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            week_name = str(payload.get("weekName", "")).strip()
+            if not week_name:
+                self.send_json({"error": "weekName 不能为空"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            force = bool(payload.get("force", False))
+            try:
+                result = create_week_resources(week_name=week_name, force=force)
+                self.send_json({"ok": True, **result})
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+
+        def _delete_week(self, raw_body: bytes) -> None:
+            try:
+                payload = json.loads(raw_body.decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_json({"error": "invalid json body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            week_id = str(payload.get("weekId", "")).strip()
+            mode = str(payload.get("mode", "assignment_only")).strip()
+            confirm = str(payload.get("confirm", "")).strip()
+            expected = f"DELETE ALL {week_id}" if mode == "assignment_and_week_dir" else f"DELETE {week_id}"
+            if not week_id:
+                self.send_json({"error": "weekId 不能为空"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if confirm != expected:
+                self.send_json({"error": f"确认文本不匹配，请输入：{expected}"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            assignment_path = Path(__file__).resolve().parent / "configs" / "assignments" / f"{week_id}.json"
+            if not assignment_path.is_file():
+                self.send_json({"error": f"assignment 不存在：{assignment_path.name}"}, status=HTTPStatus.NOT_FOUND)
+                return
+
+            week_dir_path: Path | None = None
+            if mode == "assignment_and_week_dir":
+                config = load_assignment_config(assignment_path)
+                week_dir_path = config.week_dir.resolve()
+                repo_root = Path(__file__).resolve().parent
+                if repo_root not in week_dir_path.parents:
+                    self.send_json({"error": f"禁止删除仓库外目录：{week_dir_path}"}, status=HTTPStatus.FORBIDDEN)
+                    return
+
+            assignment_path.unlink()
+            if week_dir_path and week_dir_path.exists():
+                shutil.rmtree(week_dir_path)
+
+            global _repository
+            if _repository and _repository.assignment_config.assignment_id == week_id:
+                remaining = [path for path in list_assignment_config_paths() if path.stem != week_id]
+                if remaining:
+                    _repository = ReviewRepository(load_assignment_config(remaining[0]))
+            self.send_json({"ok": True, "deletedWeekId": week_id, "scope": mode})
+
+        def _open_week_resource(self, raw_body: bytes) -> None:
+            try:
+                payload = json.loads(raw_body.decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_json({"error": "invalid json body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            week_id = str(payload.get("weekId", "")).strip()
+            target = str(payload.get("target", "")).strip()
+            if not week_id or target not in {"raw_submissions", "answer_key"}:
+                self.send_json({"error": "参数无效"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            assignment_path = Path(__file__).resolve().parent / "configs" / "assignments" / f"{week_id}.json"
+            if not assignment_path.is_file():
+                self.send_json({"error": f"assignment 不存在：{assignment_path.name}"}, status=HTTPStatus.NOT_FOUND)
+                return
+
+            config = load_assignment_config(assignment_path)
+            target_path = config.raw_submissions_dir.resolve() if target == "raw_submissions" else config.answer_key_path.resolve()
+            repo_root = Path(__file__).resolve().parent
+            if repo_root not in target_path.parents and target_path != repo_root:
+                self.send_json(
+                    {"error": f"禁止打开仓库外路径：{target_path}", "path": str(target_path), "opened": False},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+                return
+            if not target_path.exists():
+                self.send_json(
+                    {"error": f"目标路径不存在：{target_path}", "path": str(target_path), "opened": False},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            opened, open_error = try_open_path(target_path)
+            self.send_json(
+                {
+                    "ok": True,
+                    "opened": opened,
+                    "path": str(target_path),
+                    "target": target,
+                    "error": open_error,
+                }
+            )
+
+        def _get_week_resource_path(self, raw_body: bytes) -> None:
+            try:
+                payload = json.loads(raw_body.decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_json({"error": "invalid json body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            week_id = str(payload.get("weekId", "")).strip()
+            target = str(payload.get("target", "")).strip()
+            if not week_id or target not in {"raw_submissions", "answer_key"}:
+                self.send_json({"error": "参数无效"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            assignment_path = Path(__file__).resolve().parent / "configs" / "assignments" / f"{week_id}.json"
+            if not assignment_path.is_file():
+                self.send_json({"error": f"assignment 不存在：{assignment_path.name}"}, status=HTTPStatus.NOT_FOUND)
+                return
+
+            config = load_assignment_config(assignment_path)
+            target_path = config.raw_submissions_dir.resolve() if target == "raw_submissions" else config.answer_key_path.resolve()
+            self.send_json({"ok": True, "path": str(target_path), "target": target})
+
+        def _run_pipeline_task(self, raw_body: bytes) -> None:
+            try:
+                payload = json.loads(raw_body.decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_json({"error": "invalid json body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            task_name = str(payload.get("task", "")).strip()
+            week_id = str(payload.get("weekId", "")).strip()
+            max_workers = payload.get("maxWorkers", 4)
+            flag_enabled = bool(payload.get("flagEnabled", False))
+
+            if not week_id:
+                self.send_json({"error": "weekId 不能为空"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                max_workers = int(max_workers)
+            except (TypeError, ValueError):
+                self.send_json({"error": "maxWorkers 必须是整数"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                task_record = _start_pipeline_task(task_name, week_id, max_workers, flag_enabled)
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                return
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({"ok": True, "task": task_record})
+
+        def _get_latest_pipeline_task(self, parsed_url) -> None:
+            query = parse_qs(parsed_url.query or "")
+            task_name = str((query.get("task") or [""])[0]).strip()
+            week_id = str((query.get("weekId") or [""])[0]).strip()
+            if task_name not in {"preprocess", "grading"}:
+                self.send_json({"error": "task 参数无效"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if not week_id:
+                self.send_json({"error": "weekId 不能为空"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            task_record = _get_latest_pipeline_task_record(task_name, week_id)
+            self.send_json({"ok": True, "task": task_record})
+
+        def _get_pipeline_task_detail(self, parsed_url) -> None:
+            query = parse_qs(parsed_url.query or "")
+            task_id = str((query.get("taskId") or [""])[0]).strip()
+            since_line = str((query.get("sinceLine") or ["0"])[0]).strip()
+            limit = str((query.get("limit") or ["60"])[0]).strip()
+            if not task_id:
+                self.send_json({"error": "taskId 不能为空"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                since_line_num = max(0, int(since_line))
+                limit_num = max(1, min(200, int(limit)))
+            except ValueError:
+                self.send_json({"error": "sinceLine/limit 必须是整数"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            task_record = _get_pipeline_task_record(task_id)
+            if not task_record:
+                self.send_json({"error": f"任务不存在：{task_id}"}, status=HTTPStatus.NOT_FOUND)
+                return
+            lines, total = _read_pipeline_log_lines(task_record, since_line_num, limit_num)
+            self.send_json({"ok": True, "task": task_record, "lines": lines, "totalLines": total})
+
         def do_GET(self) -> None:
             try:
                 parsed = urlparse(self.path)
                 path = parsed.path
+                repo = _repository
 
                 if path == "/" or path == "/index.html":
-                    self.serve_file(repository.resolve_ui_asset("index.html"))
+                    self.serve_file(repo.resolve_ui_asset("index.html"))
                     return
                 if path == "/assets/style.css":
-                    self.serve_file(repository.resolve_ui_asset("style.css"))
+                    self.serve_file(repo.resolve_ui_asset("style.css"))
                     return
                 if path == "/assets/app.js":
-                    self.serve_file(repository.resolve_ui_asset("app.js"))
+                    self.serve_file(repo.resolve_ui_asset("app.js"))
+                    return
+                if path == "/api/weeks":
+                    self.send_json(self._list_weeks_payload())
                     return
                 if path == "/api/students":
-                    self.send_json({"students": repository.list_students()})
+                    self.send_json({"students": repo.list_students()})
+                    return
+                if path == "/api/student/":
+                    self.send_error(HTTPStatus.NOT_FOUND)
                     return
                 if path.startswith("/api/student/"):
                     student_id = unquote(path[len("/api/student/"):])
-                    self.send_json(repository.get_student_payload(student_id))
+                    self.send_json(repo.get_student_payload(student_id))
+                    return
+                if path.startswith("/api/switch-week/"):
+                    week = unquote(path[len("/api/switch-week/"):])
+                    self._switch_week(week)
+                    return
+                if path == "/api/prompt":
+                    self._read_prompt_file()
+                    return
+                if path == "/api/subjects":
+                    self._read_subjects_json()
+                    return
+                if path == "/api/apikey":
+                    self._read_api_key(parsed)
+                    return
+                if path == "/api/pipeline/latest":
+                    self._get_latest_pipeline_task(parsed)
+                    return
+                if path == "/api/pipeline/task":
+                    self._get_pipeline_task_detail(parsed)
                     return
                 if path.startswith("/images/"):
                     parts = [unquote(part) for part in path.split("/") if part]
@@ -205,7 +847,7 @@ def create_handler(repository: ReviewRepository):
                         self.send_error(HTTPStatus.NOT_FOUND)
                         return
                     _, student_id, file_name = parts
-                    self.serve_file(repository.resolve_image(student_id, file_name))
+                    self.serve_file(repo.resolve_image(student_id, file_name))
                     return
 
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -218,6 +860,52 @@ def create_handler(repository: ReviewRepository):
             try:
                 parsed = urlparse(self.path)
                 path = parsed.path
+
+                if path == "/api/prompt":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    self._write_prompt_file(raw_body)
+                    return
+                if path == "/api/prompt/reset":
+                    self._reset_prompt_file()
+                    return
+
+                if path == "/api/subjects":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    self._write_subjects_json(raw_body)
+                    return
+                if path == "/api/apikey":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    self._write_api_key(raw_body)
+                    return
+                if path == "/api/weeks/create":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    self._create_week(raw_body)
+                    return
+                if path == "/api/weeks/delete":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    self._delete_week(raw_body)
+                    return
+                if path == "/api/weeks/open":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    self._open_week_resource(raw_body)
+                    return
+                if path == "/api/weeks/path":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    self._get_week_resource_path(raw_body)
+                    return
+                if path == "/api/pipeline/run":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    self._run_pipeline_task(raw_body)
+                    return
+
                 if not path.startswith("/api/student/"):
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -235,7 +923,7 @@ def create_handler(repository: ReviewRepository):
                     self.send_error(HTTPStatus.BAD_REQUEST, "renderedText must be string")
                     return
 
-                repository.save_result(student_id, result_json, rendered_text)
+                repo.save_result(student_id, result_json, rendered_text)
                 self.send_json({"ok": True})
             except FileNotFoundError as exc:
                 self.send_error(HTTPStatus.NOT_FOUND, str(exc))
@@ -243,6 +931,19 @@ def create_handler(repository: ReviewRepository):
                 self.send_error(HTTPStatus.BAD_REQUEST, "invalid json body")
             except Exception as exc:
                 self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+
+        def _switch_week(self, week: str) -> None:
+            global _repository
+            try:
+                assignment_path = Path(__file__).resolve().parent / "configs" / "assignments" / f"{week}.json"
+                if assignment_path.is_file():
+                    config = load_assignment_config(assignment_path)
+                else:
+                    config = load_runtime_config(week=week)
+                _repository = ReviewRepository(config)
+                self.send_json({"ok": True, "week": week, "week_name": config.week_name})
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
 
         def serve_file(self, file_path: Path) -> None:
             mime_type, _ = mimetypes.guess_type(str(file_path))
@@ -253,9 +954,9 @@ def create_handler(repository: ReviewRepository):
             self.end_headers()
             self.wfile.write(body)
 
-        def send_json(self, payload: dict) -> None:
+        def send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -272,16 +973,22 @@ def main() -> int:
     try:
         assignment_config = load_runtime_config(assignment=args.assignment, week=args.week)
     except ValueError as exc:
-        raise SystemExit(str(exc))
+        if args.assignment or args.week:
+            raise SystemExit(str(exc))
+        assignment_paths = list_assignment_config_paths()
+        if not assignment_paths:
+            raise SystemExit(str(exc))
+        assignment_config = load_assignment_config(sorted(assignment_paths)[0])
     week_dir = assignment_config.week_dir
     if not week_dir.is_dir():
         raise SystemExit(f"周目录不存在：{week_dir}")
 
-    repository = ReviewRepository(assignment_config)
-    if not repository.processed_dir.is_dir():
-        raise SystemExit(f"标准化图片目录不存在：{repository.processed_dir}")
+    global _repository
+    _repository = ReviewRepository(assignment_config)
+    if not _repository.processed_dir.is_dir():
+        raise SystemExit(f"标准化图片目录不存在：{_repository.processed_dir}")
 
-    handler = create_handler(repository)
+    handler = create_handler()
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(
         f"Review app running at http://{args.host}:{args.port} | "

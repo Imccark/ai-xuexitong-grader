@@ -1,6 +1,7 @@
 import argparse
 import concurrent.futures
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,7 @@ from grade_evaluator import (
     sanitize_filename,
     write_failure_result,
 )
-from project_config import load_runtime_config
+from project_config import LOCAL_ENV_FILE, load_runtime_config, resolve_api_key
 
 
 PAGE_PATTERN = re.compile(r"page_(\d+)\.png$", re.IGNORECASE)
@@ -204,9 +205,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--assignment", help="assignment 配置文件路径；如果仓库里只有一个 assignment，可省略")
     parser.add_argument("--max-workers", type=int, default=4, help="最大并发数，默认 4")
     parser.add_argument(
+        "--regrade",
         "--retry-failed",
+        dest="regrade",
         action="store_true",
-        help="若已有结果文件属于失败占位结果，则允许重新评分",
+        help="强制重新批改所有学生（包含已有成功结果）",
     )
     parser.add_argument(
         "--answer-key",
@@ -245,14 +248,17 @@ def grade_one_student(
     student_dir: Path,
     tex_path: str,
     results_dir: Path,
-    retry_failed: bool,
+    regrade: bool,
     subject_config,
 ) -> StudentTaskResult:
     student_id = sanitize_filename(student_dir.name)
+    print(f"[START] {student_id}")
     result_path = Path(get_student_result_path(student_id, str(results_dir)))
 
     if has_non_empty_file(result_path):
-        if retry_failed and is_failed_placeholder_result(result_path):
+        if regrade:
+            print(f"[RE-GRADE] {student_id}")
+        elif is_failed_placeholder_result(result_path):
             print(f"[RETRY-FAILED] {student_id}")
         else:
             print(f"[SKIP] {student_id}")
@@ -346,6 +352,17 @@ def main() -> int:
     if args.max_workers < 1:
         raise SystemExit("--max-workers 必须大于等于 1")
 
+    api_key, api_key_source = resolve_api_key(runtime_config.subject.api_key_env)
+    if not api_key:
+        raise SystemExit(
+            f"缺失 API Key：{runtime_config.subject.api_key_env}。\n"
+            f"请先在控制台点击“配置 API Key”保存，或手动设置系统环境变量。\n"
+            f"本地环境文件路径：{LOCAL_ENV_FILE}"
+        )
+    os.environ[runtime_config.subject.api_key_env] = api_key
+    source_desc = "系统环境变量" if api_key_source == "process_env" else "本地环境文件"
+    print(f"[API_KEY] 已加载 {runtime_config.subject.api_key_env}（来源：{source_desc}）")
+
     print(f"[CONFIG] {runtime_config.assignment_id} | {runtime_config.subject.subject_name} | {runtime_config.week_name}")
     results_dir.mkdir(parents=True, exist_ok=True)
     student_dirs = sorted(path for path in processed_dir.iterdir() if path.is_dir())
@@ -363,7 +380,7 @@ def main() -> int:
                 student_dir,
                 str(tex_path),
                 results_dir,
-                args.retry_failed,
+                args.regrade,
                 runtime_config.subject,
             ): student_dir
             for student_dir in student_dirs

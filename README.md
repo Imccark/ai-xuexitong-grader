@@ -19,7 +19,7 @@ AI-powered grader for Xuexitong assignments
 ## Quick Start
 
 首次使用时，先配置 `configs/subjects.json` 和 `prompts/default_prompt.txt`，
-再设置 API Key`export DASHSCOPE_API_KEY="your_api_key"`，然后执行下面三步：
+再在控制台点击“配置 API Key”保存到本地环境文件 `configs/env/local.env`，然后执行下面三步：
 
 ```bash
 python create_week.py 第二周
@@ -77,7 +77,7 @@ AI 负责生成批改建议，教师保留最终判断。
         │
         ▼
 生成学生批改结果
-(results/*.txt)
+(results/*.txt + results/*.json)
         │
         ▼
 本地审阅界面
@@ -103,6 +103,60 @@ AI 负责生成批改建议，教师保留最终判断。
 ```
 
 审阅时可以一边看原始作业图片，一边直接修改 AI 生成的批注，不需要在多个窗口之间来回切换。
+
+## 控制台使用说明
+
+控制台入口：
+
+- 启动 `review_app.py` 后，默认进入“控制台”页
+- 左侧可在“控制台 / 批阅”两种视图间切换
+
+左侧周管理：
+
+- 周列表按周目录创建时间排序（Windows/macOS/Linux/WSL 兼容）
+- 点击周名称仅表示“选中周”
+- 点击“批阅”才会切换到该周的审阅界面
+- “新增一周”会创建周目录和对应 assignment 配置
+
+顶部三块状态区：
+
+- 当前作业状态卡：显示当前选中周和时间
+- 学生作业文件区：可打开/复制“学生作业文件夹”和 `answer.tex` 路径
+- 快捷操作区：
+  - 配置 API Key
+  - 删除配置（安全）
+  - 删除配置+周目录（危险）
+
+任务执行区（与当前选中周联动）：
+
+- 前处理任务：
+  - 启动 `run_preprocessing.py --assignment configs/assignments/<当前周>.json`
+  - 支持 `max-workers`、`reprocess`
+- 批改任务：
+  - 启动 `run_batch_grading.py --assignment configs/assignments/<当前周>.json`
+  - 支持 `max-workers`、`regrade`
+
+任务防呆与状态：
+
+- 同一周同一任务运行中时，不允许重复启动（前端禁用 + 后端拒绝）
+- 任务状态会实时更新为“运行中 / 已完成 / 失败”
+- 统计信息会实时输出任务日志（包含每个学生处理进度）
+- 同步落盘到 `runtime_logs/*.log`
+
+配置区：
+
+- Prompt 模板：
+  - 查看 / 编辑 / 保存 / 恢复默认
+- subjects.json：
+  - 默认表单编辑（新手模式）
+  - 可切换高级 JSON 编辑
+
+API Key 配置：
+
+- 在控制台点击“配置 API Key”
+- 支持直接输入并保存到 `configs/env/local.env`
+- 提供 Linux/PowerShell/CMD 命令一键复制
+- 运行脚本时优先读取系统环境变量，未设置时自动回退到本地 `local.env`
 
 ## 三分钟上手
 
@@ -141,10 +195,17 @@ AI 负责生成批改建议，教师保留最终判断。
 
 ```bash
 pip install -r requirements.txt
-export DASHSCOPE_API_KEY="your_api_key"
 ```
 
-如果你在 `configs/subjects.json` 里把 `api_key_env` 改成了别的名字，这里也要对应修改。
+推荐方式：启动 `review_app.py` 后，在控制台点击“配置 API Key”，把 key 保存到 `configs/env/local.env`。
+
+脚本会优先读取系统环境变量；若未设置，则自动读取本地环境文件。
+
+如果你更习惯手动设置环境变量，也可以继续使用：
+
+```bash
+export DASHSCOPE_API_KEY="your_api_key"
+```
 
 ### 3. 新建一周
 
@@ -202,6 +263,8 @@ python review_app.py --assignment configs/assignments/第二周.json --port 8765
 
 `--max-workers` 可以手动调整，例如改成 `3` 也可以，取决于 API 并发限制和你的电脑性能。
 
+也可以直接在控制台页面启动前处理/批改任务，参数会自动绑定当前选中周。
+
 最后在浏览器打开：
 
 ```text
@@ -229,7 +292,9 @@ http://127.0.0.1:8765
 │       └── page_2.png
 └── results/
     ├── 10254700432-张三.txt
-    └── 10254700433-李四.txt
+    ├── 10254700432-张三.json
+    ├── 10254700433-李四.txt
+    └── 10254700433-李四.json
 ```
 
 含义如下：
@@ -240,6 +305,8 @@ http://127.0.0.1:8765
   - 前处理后的标准化图片
 - `results/[学生标识].txt`
   - 每个学生单独的评分结果
+- `results/[学生标识].json`
+  - 与 `subjects.json` 的 `output_format` 联动解析后的结构化结果（含按题号拆分）
 - `preprocess_summary.txt`
   - 前处理汇总
 - `summary.txt`
@@ -293,15 +360,20 @@ http://127.0.0.1:8765
 - 读取 `processed_images/[学生标识]/page_*.png`
 - 批量调用大模型 API 评分
 - 结果写入 `results/[学生标识].txt`
-- 自动跳过已有非空结果
+- 同步写入 `results/[学生标识].json`（按 `output_format` 结构化解析）
+- 默认自动重试失败占位结果（包含“需人工复核”的旧结果）
+- 默认跳过已有正常结果
 - 写入 `summary.txt`
 
 `python review_app.py --assignment configs/assignments/第二周.json --port 8765`
 
-- 左侧切换学生
-- 中间查看作业图片
-- 右侧修改批注
-- `Ctrl+S` / `Cmd+S` 保存
+- 控制台管理周次（新增、删除、打开路径、复制路径）
+- 周列表按周目录创建时间排序（Windows/macOS/Linux/WSL 兼容）
+- 控制台可配置 API Key（保存到 `configs/env/local.env`）
+- 控制台可直接启动前处理/批改任务（绑定当前选中周）
+- 统计信息实时显示任务日志与状态
+- 审阅台支持左侧切换学生、中间看图、右侧编辑批注
+- `Ctrl+S` / `Cmd+S` 保存学生批注
 
 ## 最常用命令
 
@@ -335,22 +407,31 @@ python review_app.py --assignment configs/assignments/第二周.json --port 8765
 python run_batch_grading.py --assignment configs/assignments/第二周.json --answer-key /path/to/your_answer.tex --max-workers 4
 ```
 
-重跑失败占位结果：
+全量重跑所有学生：
 
 ```bash
-python run_batch_grading.py --assignment configs/assignments/第二周.json --retry-failed --max-workers 4
+python run_batch_grading.py --assignment configs/assignments/第二周.json --regrade --max-workers 4
 ```
+
+兼容说明：旧参数 `--retry-failed` 目前仍可用，但语义已对齐为全量重跑（等价于 `--regrade`）。
 
 这个参数的作用：
 
-- 默认情况下，批量评分脚本会跳过已经存在且非空的 `results/[学生标识].txt`
-- 有些结果文件其实不是正式评分结果，而是失败后写入的占位结果，里面通常会包含“需人工复核”这类文字
-- 加上 `--retry-failed` 后，脚本会只针对这类失败占位结果重新评分
+- 默认情况下：
+  - 已有正常结果会跳过
+  - 失败占位结果（通常含“需人工复核”）会自动重试
+- 加上 `--regrade` 后：
+  - 所有学生都会重新批改（无论之前是否成功）
 
 简单理解：
 
-- 不加 `--retry-failed`：已有结果一律跳过
-- 加了 `--retry-failed`：只有失败占位结果会被重跑，正常结果仍然跳过
+- 不加 `--regrade`：跳过正常结果，自动重试失败占位结果
+- 加了 `--regrade`：全部学生重跑
+
+控制台任务运行日志：
+
+- 控制台启动前处理/批改后，日志会实时显示在“统计信息”
+- 同时会落盘到仓库根目录 `runtime_logs/*.log`
 
 重新生成已经存在的标准化图片：
 
@@ -374,7 +455,7 @@ python run_preprocessing.py --assignment configs/assignments/第二周.json --re
 - `openai`
 - `pymupdf`
 - `Pillow`
-- 已设置环境变量 `DASHSCOPE_API_KEY`
+- 已配置 API Key（推荐通过控制台保存到 `configs/env/local.env`，也支持系统环境变量）
 
 ## 隐私与合规说明
 
