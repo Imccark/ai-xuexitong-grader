@@ -31,6 +31,7 @@ const state = {
   currentExportImage: null,
   exportStatusPollTimer: null,
   exportStatusPollToken: 0,
+  studentLoadToken: 0,
 };
 const ITEM_MUTABLE_MODULE_KEYWORDS = ["错误细节", "证明题审查", "改进建议"];
 
@@ -111,13 +112,9 @@ const apiCmdCmdEl = document.getElementById("apiCmdCmd");
 const copyApiCmdLinuxBtnEl = document.getElementById("copyApiCmdLinuxBtn");
 const copyApiCmdPowershellBtnEl = document.getElementById("copyApiCmdPowershellBtn");
 const copyApiCmdCmdBtnEl = document.getElementById("copyApiCmdCmdBtn");
-const exportRenderRootEl = document.getElementById("exportRenderRoot");
-
 const SIDEBAR_COLLAPSED_KEY = "review_ui_sidebar_collapsed";
 const MAIN_LEFT_WIDTH_KEY = "review_ui_main_left_width";
 const NEARBY_EXPORT_PRELOAD_RADIUS = 2;
-const EXPORT_RENDER_WIDTH = 1080;
-const EXPORT_RENDER_SCALE = 2;
 
 function setExportButtonBusy(isBusy, label) {
   if (!exportImageBtnEl) {
@@ -653,8 +650,14 @@ function escapeHtml(text) {
     .replaceAll("'", "&#39;");
 }
 
+function normalizeLatexExpression(expr) {
+  return String(expr || "")
+    .replace(/[＼﹨∖]/g, "\\")
+    .replace(/(^|[\s{[(,;:=<>+\-*])[/／]([A-Za-z]+)\b/g, (_, prefix, command) => `${prefix}\\${command}`);
+}
+
 function normalizeMatrixCellLatex(cellText) {
-  const value = String(cellText || "").trim();
+  const value = normalizeLatexExpression(cellText).trim();
   if (!value) {
     return "\\phantom{0}";
   }
@@ -666,7 +669,7 @@ function normalizeMatrixCellLatex(cellText) {
 
 function renderInlineLatexFragment(expr) {
   try {
-    return katex.renderToString(expr, {
+    return katex.renderToString(normalizeLatexExpression(expr), {
       displayMode: false,
       throwOnError: false,
       strict: "ignore",
@@ -777,7 +780,7 @@ function renderMarkdownLatex(rawText, previewEl, options = {}) {
   let tokenIndex = 0;
   const pushToken = (expr, displayMode) => {
     const key = `@@MATH_${tokenIndex++}@@`;
-    const normalizedExpr = String(expr || "");
+    const normalizedExpr = normalizeLatexExpression(expr);
     tokens.push({
       key,
       expr: normalizedExpr,
@@ -1255,12 +1258,18 @@ function applyExportImageStatus(status) {
   return normalized;
 }
 
-async function fetchExportImageStatus(options = {}) {
-  if (!state.currentStudentId) {
+function ensureStudentUnchanged(studentId, actionLabel = "当前操作") {
+  if (String(studentId || "") !== String(state.currentStudentId || "")) {
+    throw new Error(`${actionLabel}期间已切换学生，请重新操作。`);
+  }
+}
+
+async function fetchExportImageStatus(studentId = state.currentStudentId, options = {}) {
+  if (!studentId) {
     return null;
   }
   const { priorityHigh = false, enqueue = true } = options;
-  const data = await requestExportImageStatus(state.currentStudentId, { priorityHigh, enqueue });
+  const data = await requestExportImageStatus(studentId, { priorityHigh, enqueue });
   return applyExportImageStatus(data);
 }
 
@@ -1332,7 +1341,7 @@ function startExportImageStatusPolling(options = {}) {
       return;
     }
     try {
-      const status = await fetchExportImageStatus({ priorityHigh, enqueue: true });
+      const status = await fetchExportImageStatus(state.currentStudentId, { priorityHigh, enqueue: true });
       if (token !== state.exportStatusPollToken) {
         return;
       }
@@ -1360,10 +1369,15 @@ function startExportImageStatusPolling(options = {}) {
 }
 
 async function waitForExportImageReady(options = {}) {
+  const studentId = String(options.studentId || state.currentStudentId || "");
   const { priorityHigh = false, timeoutMs = 45000 } = options;
+  if (!studentId) {
+    throw new Error("请先选择一位学生。");
+  }
   const startedAt = Date.now();
-  let status = await fetchExportImageStatus({ priorityHigh, enqueue: true });
+  let status = await fetchExportImageStatus(studentId, { priorityHigh, enqueue: true });
   while (status && !status.ready) {
+    ensureStudentUnchanged(studentId, "等待图片生成");
     if (status.error) {
       throw new Error(status.error || "图片生成失败");
     }
@@ -1375,241 +1389,24 @@ async function waitForExportImageReady(options = {}) {
     }
     updateSaveStatus(status.rendering ? "图片生成中..." : "图片排队中...");
     await new Promise((resolve) => window.setTimeout(resolve, 800));
-    status = await fetchExportImageStatus({ priorityHigh: true, enqueue: true });
+    status = await fetchExportImageStatus(studentId, { priorityHigh: true, enqueue: true });
   }
+  ensureStudentUnchanged(studentId, "等待图片生成");
   return status;
 }
 
-function isExportMathEscaped(source, index) {
-  let backslashCount = 0;
-  let cursor = index - 1;
-  while (cursor >= 0 && source[cursor] === "\\") {
-    backslashCount += 1;
-    cursor -= 1;
-  }
-  return backslashCount % 2 === 1;
-}
-
-function findExportMathCloser(source, start, opener, closer) {
-  let cursor = start;
-  while (cursor < source.length) {
-    if (source.startsWith(closer, cursor) && !isExportMathEscaped(source, cursor)) {
-      if (closer === "$" && opener === "$" && source.startsWith("$$", cursor)) {
-        cursor += 1;
-        continue;
-      }
-      return cursor;
-    }
-    cursor += 1;
-  }
-  return -1;
-}
-
-function tokenizeExportSource(source) {
-  const normalized = String(source || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const tokens = [];
-  const textBuffer = [];
-  let cursor = 0;
-
-  const flushText = () => {
-    if (textBuffer.length) {
-      tokens.push({ type: "text", value: textBuffer.join("") });
-      textBuffer.length = 0;
-    }
-  };
-
-  while (cursor < normalized.length) {
-    if (normalized.startsWith("$$", cursor) && !isExportMathEscaped(normalized, cursor)) {
-      const closing = findExportMathCloser(normalized, cursor + 2, "$$", "$$");
-      if (closing >= 0) {
-        flushText();
-        tokens.push({ type: "display_math", value: normalized.slice(cursor + 2, closing) });
-        cursor = closing + 2;
-        continue;
-      }
-    }
-    if (normalized.startsWith("\\[", cursor)) {
-      const closing = findExportMathCloser(normalized, cursor + 2, "\\[", "\\]");
-      if (closing >= 0) {
-        flushText();
-        tokens.push({ type: "display_math", value: normalized.slice(cursor + 2, closing) });
-        cursor = closing + 2;
-        continue;
-      }
-    }
-    if (normalized.startsWith("\\(", cursor)) {
-      const closing = findExportMathCloser(normalized, cursor + 2, "\\(", "\\)");
-      if (closing >= 0) {
-        flushText();
-        tokens.push({ type: "inline_math", value: normalized.slice(cursor + 2, closing) });
-        cursor = closing + 2;
-        continue;
-      }
-    }
-    if (normalized[cursor] === "$" && !isExportMathEscaped(normalized, cursor)) {
-      const closing = findExportMathCloser(normalized, cursor + 1, "$", "$");
-      if (closing >= 0) {
-        flushText();
-        tokens.push({ type: "inline_math", value: normalized.slice(cursor + 1, closing) });
-        cursor = closing + 1;
-        continue;
-      }
-    }
-    textBuffer.push(normalized[cursor]);
-    cursor += 1;
-  }
-
-  flushText();
-  return tokens;
-}
-
-function appendExportTextNodes(container, value) {
-  const segments = String(value || "").split("\n");
-  segments.forEach((segment, index) => {
-    if (segment) {
-      const textSpan = document.createElement("span");
-      textSpan.textContent = segment;
-      Object.assign(textSpan.style, {
-        display: "inline",
-        whiteSpace: "pre-wrap",
-        wordBreak: "normal",
-        overflowWrap: "break-word",
-      });
-      container.appendChild(textSpan);
-    }
-    if (index < segments.length - 1) {
-      container.appendChild(document.createElement("br"));
-    }
-  });
-}
-
-function createExportRenderTree(sourceText) {
-  const shell = document.createElement("div");
-  Object.assign(shell.style, {
-    position: "fixed",
-    left: "-100000px",
-    top: "0",
-    width: `${EXPORT_RENDER_WIDTH}px`,
-    padding: "24px",
-    background: "#ffffff",
-    color: "#111111",
-    boxSizing: "border-box",
-    zIndex: "-1",
-    pointerEvents: "none",
-  });
-
-  const card = document.createElement("div");
-  Object.assign(card.style, {
-    width: "100%",
-    background: "#ffffff",
-    color: "#111111",
-    fontFamily: '"Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif',
-    fontSize: "18px",
-    fontWeight: "400",
-    lineHeight: "1.7",
-    letterSpacing: "0",
-    wordBreak: "normal",
-    overflowWrap: "break-word",
-    whiteSpace: "normal",
-    padding: "20px 24px",
-    boxSizing: "border-box",
-  });
-
-  const tokens = tokenizeExportSource(sourceText);
-  tokens.forEach((token) => {
-    if (token.type === "text") {
-      appendExportTextNodes(card, token.value);
-      return;
-    }
-
-    const expr = String(token.value || "").trim();
-    if (!expr) {
-      return;
-    }
-
-    const target = document.createElement("span");
-    if (token.type === "display_math") {
-      Object.assign(target.style, {
-        display: "block",
-        margin: "0.6em 0",
-        minHeight: "1.4em",
-      });
-    } else {
-      Object.assign(target.style, {
-        display: "inline",
-        margin: "0 0.04em",
-      });
-    }
-
-    try {
-      katex.render(expr, target, {
-        throwOnError: false,
-        displayMode: token.type === "display_math",
-        trust: false,
-        strict: "ignore",
-        output: "htmlAndMathml",
-      });
-    } catch (error) {
-      target.textContent = expr;
-    }
-    card.appendChild(target);
-  });
-
-  shell.appendChild(card);
-  return shell;
-}
-
-async function renderExportSourceToBlob(sourceText) {
-  if (!exportRenderRootEl) {
-    throw new Error("导出容器不存在。");
-  }
-  if (typeof html2canvas !== "function") {
-    throw new Error("html2canvas 未加载，无法导出图片。");
-  }
-
-  const renderTree = createExportRenderTree(sourceText);
-  exportRenderRootEl.replaceChildren(renderTree);
-
-  try {
-    if (document.fonts && document.fonts.ready) {
-      await document.fonts.ready.catch(() => {});
-    }
-    await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
-    await new Promise((resolve) => window.setTimeout(resolve, 80));
-
-    const canvas = await html2canvas(renderTree, {
-      backgroundColor: "#ffffff",
-      scale: EXPORT_RENDER_SCALE,
-      useCORS: false,
-      logging: false,
-      removeContainer: true,
-    });
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-    canvas.width = 0;
-    canvas.height = 0;
-    if (!(blob instanceof Blob)) {
-      throw new Error("浏览器未能生成 PNG 数据。");
-    }
-    return blob;
-  } finally {
-    exportRenderRootEl.replaceChildren();
-  }
-}
-
-function getCurrentExportEngine() {
-  return state.exportEngine === "latex" ? "latex" : "katex";
-}
-
 async function fetchReadyExportImagePayload() {
-  if (!state.currentStudentId) {
+  const studentId = String(state.currentStudentId || "");
+  if (!studentId) {
     throw new Error("请先选择一位学生。");
   }
 
   if (isDirty()) {
     await saveCurrentStudent({ silentStatus: true });
+    ensureStudentUnchanged(studentId, "导出图片");
   }
-  await waitForExportImageReady({ priorityHigh: true, timeoutMs: 45000 });
-  const response = await fetch(`/api/student/${encodeURIComponent(state.currentStudentId)}/export-image`, {
+  await waitForExportImageReady({ studentId, priorityHigh: true, timeoutMs: 45000 });
+  const response = await fetch(`/api/student/${encodeURIComponent(studentId)}/export-image`, {
     method: "POST",
   });
 
@@ -1627,25 +1424,19 @@ async function fetchReadyExportImagePayload() {
     throw new Error(message);
   }
 
-  const engine = getCurrentExportEngine();
-  if (engine === "latex") {
-    const blob = await response.blob();
-    const fallbackFileName = `${state.currentStudentId || "annotations"}-${Date.now()}.png`;
-    const fileName = getExportFileNameFromResponse(response, fallbackFileName);
-    return { engine, fileName, blob, sourceText: "" };
+  const blob = await response.blob();
+  ensureStudentUnchanged(studentId, "导出图片");
+  const fallbackFileName = `${studentId || "annotations"}-${Date.now()}.png`;
+  const fileName = getExportFileNameFromResponse(response, fallbackFileName);
+  if (!(blob instanceof Blob)) {
+    throw new Error("后端未返回可下载的 PNG 数据。");
   }
-
-  const data = await response.json();
-  const fileName = String(data.fileName || `${state.currentStudentId || "annotations"}-${Date.now()}.png`);
-  const sourceText = String(data.sourceText || "");
-  if (!sourceText.trim()) {
-    throw new Error("导出内容为空。");
-  }
-  return { engine, fileName, sourceText, blob: null };
+  return { fileName, blob };
 }
 
 async function regenerateCurrentExportImage() {
-  if (!state.currentStudentId) {
+  const studentId = String(state.currentStudentId || "");
+  if (!studentId) {
     window.alert("请先选择一位学生，再重新生成图片。");
     return;
   }
@@ -1655,6 +1446,7 @@ async function regenerateCurrentExportImage() {
 
   if (isDirty()) {
     await saveCurrentStudent({ silentStatus: true });
+    ensureStudentUnchanged(studentId, "重新生成图片");
   }
 
   state.isExporting = true;
@@ -1664,14 +1456,15 @@ async function regenerateCurrentExportImage() {
   updateSaveStatus("重新生成图片中...");
 
   try {
-    const status = await requestExportImageStatus(state.currentStudentId, {
+    const status = await requestExportImageStatus(studentId, {
       enqueue: true,
       priorityHigh: true,
       force: true,
     });
+    ensureStudentUnchanged(studentId, "重新生成图片");
     applyExportImageStatus(status);
     startExportImageStatusPolling({ priorityHigh: true });
-    await waitForExportImageReady({ priorityHigh: true, timeoutMs: 45000 });
+    await waitForExportImageReady({ studentId, priorityHigh: true, timeoutMs: 45000 });
     updateSaveStatus("图片已重新生成");
     window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
   } catch (error) {
@@ -1699,8 +1492,7 @@ async function exportAnnotationsAsImage() {
   updateSaveStatus("导出中...");
 
   try {
-    const { fileName, sourceText, blob: sourceBlob, engine } = await fetchReadyExportImagePayload();
-    const blob = engine === "latex" ? sourceBlob : await renderExportSourceToBlob(sourceText);
+    const { fileName, blob } = await fetchReadyExportImagePayload();
     downloadBlob(blob, fileName);
     updateSaveStatus("已下载 PNG");
     window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
@@ -1732,8 +1524,7 @@ async function copyAnnotationsImage() {
   updateSaveStatus("复制中...");
 
   try {
-    const { sourceText, blob: sourceBlob, engine } = await fetchReadyExportImagePayload();
-    const blob = engine === "latex" ? sourceBlob : await renderExportSourceToBlob(sourceText);
+    const { blob } = await fetchReadyExportImagePayload();
     await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
     updateSaveStatus("图片已复制");
     window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
@@ -2132,7 +1923,7 @@ function renderDashboardSummaryCards() {
     const latexHint = String(latexStatus.hint || "").trim();
     exportEngineCardContentEl.innerHTML = `
       <div class="export-engine-card">
-        <p class="summary-tip">选择默认图片导出引擎。LaTeX 依赖本机 <code>lualatex</code>，KaTeX 使用浏览器本地渲染。</p>
+        <p class="summary-tip">选择默认图片导出引擎。LaTeX 依赖本机 <code>lualatex</code>，KaTeX 使用本地 Playwright 渲染并截图。</p>
         <select id="exportEngineSelect" class="export-engine-select">
           <option value="latex" ${state.exportEngine === "latex" ? "selected" : ""}>LaTeX</option>
           <option value="katex" ${state.exportEngine === "katex" ? "selected" : ""}>KaTeX</option>
@@ -2854,8 +2645,13 @@ async function loadStudent(studentId, silent = false) {
     }
   }
 
+  const loadToken = state.studentLoadToken + 1;
+  state.studentLoadToken = loadToken;
   clearExportImageStatusPolling();
   const data = await fetchJson(`/api/student/${encodeURIComponent(studentId)}`);
+  if (loadToken !== state.studentLoadToken) {
+    return;
+  }
   const payload = normalizePayload(data.resultJson);
   state.currentStudentId = data.id;
   state.originalPayload = canonicalizePayload({
@@ -2870,7 +2666,7 @@ async function loadStudent(studentId, silent = false) {
   renderModules(payload);
   renderStudentList();
   const exportStatus = applyExportImageStatus(data.exportImage);
-  fetchExportImageStatus({ priorityHigh: true, enqueue: true }).catch((error) => {
+  fetchExportImageStatus(data.id, { priorityHigh: true, enqueue: true }).catch((error) => {
     window.console.warn("refresh current export image status failed", error);
   });
   warmNearbyExportImages(data.id);
@@ -2888,7 +2684,8 @@ async function loadStudent(studentId, silent = false) {
 
 async function saveCurrentStudent(options = {}) {
   const { silentStatus = false } = options;
-  if (!state.currentStudentId || state.isSaving) {
+  const studentId = String(state.currentStudentId || "");
+  if (!studentId || state.isSaving) {
     return null;
   }
 
@@ -2898,7 +2695,7 @@ async function saveCurrentStudent(options = {}) {
   }
   try {
     const currentPayload = getCurrentPayloadFromUI();
-    const data = await fetchJson(`/api/student/${encodeURIComponent(state.currentStudentId)}`, {
+    const data = await fetchJson(`/api/student/${encodeURIComponent(studentId)}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2909,12 +2706,15 @@ async function saveCurrentStudent(options = {}) {
       }),
     });
 
-    state.originalPayload = canonicalizePayload(currentPayload);
-    const student = state.students.find((item) => item.id === state.currentStudentId);
+    const student = state.students.find((item) => item.id === studentId);
     if (student) {
       student.hasResult = Object.keys(currentPayload.modules || {}).length > 0;
     }
     renderStudentList();
+    if (studentId !== state.currentStudentId) {
+      return data;
+    }
+    state.originalPayload = canonicalizePayload(currentPayload);
     const exportStatus = applyExportImageStatus(data.exportImage);
     if (exportStatus?.queued || exportStatus?.rendering) {
       updateSaveStatus("已保存，正在预生成图片...");

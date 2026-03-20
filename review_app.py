@@ -62,6 +62,7 @@ class ExportImageError(RuntimeError):
 
 _EXPORT_WORKER_COUNT = 2
 _EXPORT_IMAGE_RENDER_SCALE = 2.2
+_KATEX_EXPORT_TIMEOUT_SECONDS = 45
 _LATEX_TEXT_ESCAPES = {
     "\\": r"\textbackslash{}",
     "{": r"\{",
@@ -345,6 +346,40 @@ def render_review_text_to_png_bytes(source: str) -> bytes:
         return _render_pdf_to_png_bytes(pdf_path)
 
 
+def render_review_text_to_png_bytes_with_katex(source: str) -> bytes:
+    renderer_script = Path(__file__).resolve().parent / "export_renderer.js"
+    if not renderer_script.is_file():
+        raise ExportImageError(f"未找到 KaTeX 导出脚本：{renderer_script}")
+
+    node_path = shutil.which("node")
+    if not node_path:
+        raise ExportImageError("未找到 node，无法使用 KaTeX 导出图片。")
+
+    normalized = source.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        raise ExportImageError("导出内容为空，无法生成图片。")
+
+    with tempfile.TemporaryDirectory(prefix="review_export_katex_") as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        output_path = temp_dir / "export.png"
+        completed = subprocess.run(
+            [node_path, str(renderer_script), "--output", str(output_path)],
+            input=normalized,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=_KATEX_EXPORT_TIMEOUT_SECONDS,
+            check=False,
+        )
+        if completed.returncode != 0 or not output_path.is_file():
+            log_tail = "\n".join(completed.stdout.splitlines()[-25:]).strip()
+            detail = f"\n{log_tail}" if log_tail else ""
+            raise ExportImageError(f"KaTeX 截图失败，无法导出图片。{detail}")
+        return output_path.read_bytes()
+
+
 class ReviewRepository:
     def __init__(self, assignment_config: AssignmentConfig):
         self.assignment_config = assignment_config
@@ -369,12 +404,12 @@ class ReviewRepository:
             thread.start()
 
     def _get_export_source_path(self, student_id: str) -> Path | None:
-        txt_path = self.get_result_path(student_id)
-        if txt_path.exists() and txt_path.stat().st_size > 0:
-            return txt_path
         json_path = self.get_result_json_path(student_id)
         if json_path.exists() and json_path.stat().st_size > 0:
             return json_path
+        txt_path = self.get_result_path(student_id)
+        if txt_path.exists() and txt_path.stat().st_size > 0:
+            return txt_path
         return None
 
     def _get_export_source_mtime(self, student_id: str) -> float:
@@ -666,11 +701,15 @@ class ReviewRepository:
         elif isinstance(result_json, dict):
             source_text = self.render_result_text(result_json)
         else:
-            result_path = self.get_result_path(student_id)
-            if result_path.exists():
-                source_text = result_path.read_text(encoding="utf-8")
-            else:
+            result_json_path = self.get_result_json_path(student_id)
+            if result_json_path.exists() and result_json_path.stat().st_size > 0:
                 source_text = self.render_result_text(self.load_result_json(student_id))
+            else:
+                result_path = self.get_result_path(student_id)
+                if result_path.exists():
+                    source_text = result_path.read_text(encoding="utf-8")
+                else:
+                    source_text = self.render_result_text(self.load_result_json(student_id))
         normalized = source_text.replace("\r\n", "\n").replace("\r", "\n").strip()
         if not normalized:
             raise ExportImageError("导出内容为空，无法生成图片。")
@@ -689,10 +728,12 @@ class ReviewRepository:
 
     def render_cached_export_image_bytes(self, student_id: str, engine: str) -> bytes:
         normalized_engine = str(engine or "").strip().lower()
-        if normalized_engine != "latex":
-            raise ExportImageError(f"不支持的服务端导出引擎：{engine}")
         source_text = self.get_cached_export_source(student_id)
-        return render_review_text_to_png_bytes(source_text)
+        if normalized_engine == "latex":
+            return render_review_text_to_png_bytes(source_text)
+        if normalized_engine == "katex":
+            return render_review_text_to_png_bytes_with_katex(source_text)
+        raise ExportImageError(f"不支持的服务端导出引擎：{engine}")
 
     def resolve_ui_asset(self, asset_name: str) -> Path:
         asset_path = (self.ui_dir / asset_name).resolve()
@@ -1404,26 +1445,13 @@ def create_handler():
                 return
 
             engine = get_export_engine_setting()
-            source_text = repo.get_cached_export_source(student_id)
             file_name = f"{student_id}-annotations.png"
-            if engine == "latex":
-                image_bytes = repo.render_cached_export_image_bytes(student_id, engine)
-                self.send_binary(
-                    image_bytes,
-                    content_type="image/png",
-                    file_name=file_name,
-                    inline=False,
-                )
-                return
-
-            self.send_json(
-                {
-                    "ok": True,
-                    "fileName": file_name,
-                    "sourceText": source_text,
-                    "exportEngine": engine,
-                    "exportImage": status,
-                }
+            image_bytes = repo.render_cached_export_image_bytes(student_id, engine)
+            self.send_binary(
+                image_bytes,
+                content_type="image/png",
+                file_name=file_name,
+                inline=False,
             )
 
         def do_GET(self) -> None:

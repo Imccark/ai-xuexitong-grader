@@ -1,0 +1,24 @@
+{
+  "name": "ai-xuexitong-grader-clean",
+  "version": "1.0.0",
+  "description": "![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white) ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/Platform-Xuexitong-orange) ![UI](https://img.shields.io/badge/Review-Local%20Web%20UI-0A7EA4)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Imccark/ai-xuexitong-grader.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Imccark/ai-xuexitong-grader/issues"
+  },
+  "homepage": "https://github.com/Imccark/ai-xuexitong-grader#readme",
+  "devDependencies": {
+    "playwright": "^1.58.2"
+  }
+}

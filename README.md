@@ -66,6 +66,26 @@ AI 负责生成批改建议，教师保留最终判断。
 - 提供本地审阅 UI
 - 支持人工修改与复核工作流程
 
+## 运行依赖
+
+项目当前分成两套运行时：
+
+- Python 运行时
+  - `openai`：调用大模型 API
+  - `PyMuPDF`：PDF 读写、LaTeX 导出后的 PDF 转 PNG
+  - `Pillow`：图片拼接与格式处理
+- Node.js 运行时
+  - `playwright`：本地截图导出图片（KaTeX 导出链路）
+- 系统级可选依赖
+  - `lualatex`：仅在你选择 `LaTeX` 图片导出引擎时需要
+  - Playwright Chromium 浏览器：仅在你使用 `KaTeX` 图片导出引擎时需要
+
+一句话区分：
+
+- 不用“导出图片”功能，只需要 Python 依赖即可
+- 用 `KaTeX` 导出图片，需要 `Node.js + Playwright Chromium`
+- 用 `LaTeX` 导出图片，需要 `lualatex`
+
 ## 适用场景
 
 - 学习通导出的整班手写作业批改
@@ -161,7 +181,7 @@ AI 负责生成批改建议，教师保留最终判断。
 - 图片导出：
   - 可选择默认导出引擎：`LaTeX` / `KaTeX`
   - `LaTeX` 走后端 `lualatex -> PDF -> PNG`
-  - `KaTeX` 走浏览器本地渲染 + `html2canvas`
+  - `KaTeX` 走后端 `Playwright + KaTeX` 渲染并截图
   - 控制台会显示当前系统下 LaTeX 环境检测结果（Windows/macOS/Linux/WSL）
   - 可在批阅页点击“重新生成图片”强制把当前学生重新入队生成
 - subjects.json：
@@ -203,6 +223,32 @@ python --version
 python3 --version
 ```
 
+#### 0.1 安装 Node.js（用于 KaTeX 图片导出）
+
+建议安装 **Node.js 18+**。
+
+- Windows：
+  - 到 https://nodejs.org/ 下载 LTS 安装包
+  - 安装完成后重新打开 PowerShell
+- macOS：
+  - 推荐 `brew install node`
+  - 或从 https://nodejs.org/ 下载 pkg 安装包
+- Linux：
+  - 推荐优先使用发行版包管理器或 NodeSource
+  - Ubuntu / Debian 可先用系统自带包，或按 NodeSource 官方说明安装较新 LTS
+
+验证：
+
+```powershell
+node --version
+npm --version
+```
+
+```bash
+node --version
+npm --version
+```
+
 #### 1. 先进入项目目录（很重要）
 
 后面所有命令都默认在项目根目录执行（能看到 `README.md`、`requirements.txt`）。
@@ -225,13 +271,51 @@ Windows PowerShell：
 
 ```powershell
 python -m pip install -r requirements.txt
+npm install
+npx playwright install chromium
 ```
 
 macOS / Linux bash：
 
 ```bash
 python3 -m pip install -r requirements.txt
+npm install
+npx playwright install chromium
 ```
+
+说明：
+
+- `pip install -r requirements.txt` 安装 Python 库
+- `npm install` 安装 Node 侧依赖
+- `npx playwright install chromium` 安装 KaTeX 导出图片需要的 Chromium
+
+如果你确定不会使用 `KaTeX` 图片导出，可以暂时跳过 `npm install` 和 `npx playwright install chromium`。
+
+#### 2.1 可选安装 LaTeX（仅 `LaTeX` 导出引擎需要）
+
+如果你希望使用 `LaTeX` 导出图片，而不是 `KaTeX`，还需要本机安装 `lualatex`。
+
+- Windows：
+  - 推荐安装 **MiKTeX** 或 **TeX Live**
+  - 安装后确认 `lualatex` 在 PATH 中可直接执行
+- macOS：
+  - 推荐安装 **MacTeX**
+- Linux：
+  - 推荐安装 **TeX Live**
+- WSL：
+  - 需要安装在 WSL 里的 Linux 环境，不是只安装 Windows 侧 TeX
+
+验证：
+
+```powershell
+lualatex --version
+```
+
+```bash
+lualatex --version
+```
+
+如果没有安装 LaTeX，也可以直接在控制台把默认导出引擎设为 `KaTeX`。
 
 #### 3. 配置学科（两条路线共用）
 
@@ -462,6 +546,46 @@ http://127.0.0.1:8765
 - 控制台支持保存默认图片导出引擎（`LaTeX` / `KaTeX`）
 - 批阅页支持“复制图片 / 导出图片 / 重新生成图片”
 - `Ctrl+S` / `Cmd+S` 保存学生批注
+
+## 推荐安装方式
+
+如果你只想尽快跑起来，推荐按下面方式安装：
+
+- Windows
+  1. 安装 Python 3.10+
+  2. 安装 Node.js LTS
+  3. 在项目目录执行：
+
+```powershell
+python -m pip install -r requirements.txt
+npm install
+npx playwright install chromium
+python review_app.py --port 8765
+```
+
+- macOS
+  1. `brew install python node`
+  2. 在项目目录执行：
+
+```bash
+python3 -m pip install -r requirements.txt
+npm install
+npx playwright install chromium
+python3 review_app.py --port 8765
+```
+
+- Linux / WSL
+  1. 安装 `python3`、`python3-pip`、`nodejs`、`npm`
+  2. 在项目目录执行：
+
+```bash
+python3 -m pip install -r requirements.txt
+npm install
+npx playwright install chromium
+python3 review_app.py --port 8765
+```
+
+如果你想让 `LaTeX` 导出也可用，再额外安装 `lualatex` 即可。
 
 ## 最常用命令
 

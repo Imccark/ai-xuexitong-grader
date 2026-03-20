@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+node_modules/
 
 # Local week data and generated artifacts
 */raw_submissions/
