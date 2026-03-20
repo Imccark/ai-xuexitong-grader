@@ -20,5 +20,6 @@ Thumbs.db
 configs/assignments/第一周.json
 configs/assignments/第二周.json
 configs/env/local.env
+configs/env/review_ui_settings.json
 runtime_logs/
 第二周/

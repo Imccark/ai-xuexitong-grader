@@ -70,6 +70,12 @@
                   <p class="dashboard-stat-placeholder">先在左侧选中一周</p>
                 </div>
               </article>
+              <article class="dashboard-card dashboard-summary-card" id="cardExportEngine">
+                <h3>图片导出</h3>
+                <div class="dashboard-card-content dashboard-summary-content" id="exportEngineCardContent">
+                  <p class="dashboard-stat-placeholder">加载导出设置中</p>
+                </div>
+              </article>
               <article class="dashboard-card dashboard-card-full">
                 <h3>Prompt 模板</h3>
                 <div class="config-card-wrap">
@@ -250,6 +256,8 @@
               <h2>批注编辑</h2>
             </div>
             <div class="status-actions">
+              <button id="regenerateImageBtn" class="export-image-btn" type="button">重新生成图片</button>
+              <button id="copyImageBtn" class="export-image-btn" type="button">复制图片</button>
               <button id="exportImageBtn" class="export-image-btn" type="button">导出图片</button>
               <div id="saveStatus" class="save-status">未保存</div>
             </div>
@@ -275,6 +283,7 @@
     <script src="/assets/vendor/js/katex.min.js"></script>
     <script src="/assets/vendor/js/katex-auto-render.min.js"></script>
     <script src="/assets/vendor/js/html2canvas.min.js"></script>
+    <div id="exportRenderRoot" aria-hidden="true"></div>
     <script src="/assets/app.js"></script>
   </body>
 </html>

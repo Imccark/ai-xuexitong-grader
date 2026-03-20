@@ -1,27 +1,37 @@
 import argparse
+import io
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
+import tempfile
 import uuid
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+import fitz
+from PIL import Image
 
 from create_week import build_assignment_payload, write_json
 from project_config import (
     LOCAL_ENV_FILE,
+    LOCAL_SETTINGS_FILE,
     AssignmentConfig,
+    get_export_engine_setting,
     get_local_env_var,
     is_valid_env_name,
     list_assignment_config_paths,
     load_assignment_config,
     load_runtime_config,
+    write_export_engine_setting,
     write_local_env_var,
 )
 from run_batch_grading import parse_result_text
@@ -46,6 +56,295 @@ def get_page_number(path: Path) -> int:
         return 0
 
 
+class ExportImageError(RuntimeError):
+    """Raised when the backend export pipeline cannot render a PNG."""
+
+
+_EXPORT_WORKER_COUNT = 2
+_EXPORT_IMAGE_RENDER_SCALE = 2.2
+_LATEX_TEXT_ESCAPES = {
+    "\\": r"\textbackslash{}",
+    "{": r"\{",
+    "}": r"\}",
+    "#": r"\#",
+    "$": r"\$",
+    "%": r"\%",
+    "&": r"\&",
+    "_": r"\_",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+}
+_LATEX_REQUIRED_FILES = ["standalone.cls", "ctex.sty", "amsmath.sty", "amssymb.sty", "bm.sty"]
+
+
+def _escape_latex_text(text: str) -> str:
+    return "".join(_LATEX_TEXT_ESCAPES.get(char, char) for char in text)
+
+
+def _detect_runtime_platform() -> dict:
+    runtime_platform = str(sys.platform or "").lower()
+    system_name = "Linux"
+    if runtime_platform.startswith("win") or os.name == "nt":
+        system_name = "Windows"
+    elif runtime_platform == "darwin":
+        system_name = "macOS"
+
+    is_wsl = False
+    try:
+        version_text = Path("/proc/version").read_text(encoding="utf-8", errors="ignore").lower()
+        is_wsl = "microsoft" in version_text or "wsl" in version_text
+    except Exception:
+        is_wsl = False
+
+    label = "WSL" if is_wsl else system_name
+    return {
+        "system": system_name,
+        "label": label,
+        "isWsl": is_wsl,
+        "platform": runtime_platform,
+    }
+
+
+def _latex_install_hint(platform_info: dict) -> str:
+    label = str(platform_info.get("label") or "")
+    if label == "Windows":
+        return "Windows 建议安装 MiKTeX 或 TeX Live，并确保 lualatex 在 PATH 中。"
+    if label == "macOS":
+        return "macOS 建议安装 MacTeX，并确保 lualatex 可在终端直接执行。"
+    if label == "WSL":
+        return "当前是 WSL，需在 WSL 里的 Linux 环境安装 TeX Live，而不是只装 Windows 侧 LaTeX。"
+    return "Linux 建议安装 TeX Live，并确保 lualatex 与 kpsewhich 在 PATH 中。"
+
+
+def _get_latex_environment_status() -> dict:
+    platform_info = _detect_runtime_platform()
+    lualatex_path = shutil.which("lualatex") or ""
+    kpsewhich_path = shutil.which("kpsewhich") or ""
+    missing_files: list[str] = []
+
+    if kpsewhich_path:
+        for tex_file in _LATEX_REQUIRED_FILES:
+            try:
+                completed = subprocess.run(
+                    ["kpsewhich", tex_file],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    encoding="utf-8",
+                    errors="ignore",
+                    timeout=8,
+                    check=False,
+                )
+            except Exception:
+                missing_files.append(tex_file)
+                continue
+            if completed.returncode != 0 or not completed.stdout.strip():
+                missing_files.append(tex_file)
+
+    available = bool(lualatex_path) and (not kpsewhich_path or not missing_files)
+    detail_parts = []
+    if not lualatex_path:
+        detail_parts.append("未找到 lualatex")
+    if not kpsewhich_path:
+        detail_parts.append("未找到 kpsewhich，无法校验宏包")
+    elif missing_files:
+        detail_parts.append(f"缺少宏包文件：{', '.join(missing_files)}")
+
+    return {
+        "available": available,
+        "platform": platform_info,
+        "lualatexPath": lualatex_path,
+        "kpsewhichPath": kpsewhich_path,
+        "missingFiles": missing_files,
+        "detail": "；".join(detail_parts),
+        "hint": _latex_install_hint(platform_info),
+    }
+
+
+def _is_escaped(source: str, index: int) -> bool:
+    backslash_count = 0
+    cursor = index - 1
+    while cursor >= 0 and source[cursor] == "\\":
+        backslash_count += 1
+        cursor -= 1
+    return backslash_count % 2 == 1
+
+
+def _find_math_closer(source: str, start: int, opener: str, closer: str) -> int:
+    cursor = start
+    while cursor < len(source):
+        if source.startswith(closer, cursor) and not _is_escaped(source, cursor):
+            if closer == "$" and opener == "$" and source.startswith("$$", cursor):
+                cursor += 1
+                continue
+            return cursor
+        cursor += 1
+    return -1
+
+
+def _tokenize_export_text(source: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    text_buffer: list[str] = []
+    cursor = 0
+
+    def flush_text() -> None:
+        if text_buffer:
+            tokens.append(("text", "".join(text_buffer)))
+            text_buffer.clear()
+
+    while cursor < len(source):
+        if source.startswith("$$", cursor) and not _is_escaped(source, cursor):
+            closing = _find_math_closer(source, cursor + 2, "$$", "$$")
+            if closing >= 0:
+                flush_text()
+                tokens.append(("display_math", source[cursor + 2:closing]))
+                cursor = closing + 2
+                continue
+        if source.startswith(r"\[", cursor):
+            closing = _find_math_closer(source, cursor + 2, r"\[", r"\]")
+            if closing >= 0:
+                flush_text()
+                tokens.append(("display_math", source[cursor + 2:closing]))
+                cursor = closing + 2
+                continue
+        if source.startswith(r"\(", cursor):
+            closing = _find_math_closer(source, cursor + 2, r"\(", r"\)")
+            if closing >= 0:
+                flush_text()
+                tokens.append(("inline_math", source[cursor + 2:closing]))
+                cursor = closing + 2
+                continue
+        if source[cursor] == "$" and not _is_escaped(source, cursor):
+            closing = _find_math_closer(source, cursor + 1, "$", "$")
+            if closing >= 0:
+                flush_text()
+                tokens.append(("inline_math", source[cursor + 1:closing]))
+                cursor = closing + 1
+                continue
+
+        text_buffer.append(source[cursor])
+        cursor += 1
+
+    flush_text()
+    return tokens
+
+
+def _render_export_text_to_latex_body(source: str) -> str:
+    parts: list[str] = []
+    for token_type, value in _tokenize_export_text(source.replace("\r\n", "\n").replace("\r", "\n")):
+        if token_type == "text":
+            for segment in re.split("(\n)", value):
+                if not segment:
+                    continue
+                if segment == "\n":
+                    parts.append(r"\par" + "\n")
+                else:
+                    parts.append(_escape_latex_text(segment))
+            continue
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        if token_type == "display_math":
+            parts.append("\n\\[\n" + cleaned + "\n\\]\n")
+        else:
+            parts.append(f"${cleaned}$")
+
+    body = "".join(parts).strip()
+    if not body:
+        raise ExportImageError("导出内容为空，无法生成图片。")
+    return body
+
+
+def _build_export_latex_document(source: str) -> str:
+    body = _render_export_text_to_latex_body(source)
+    return (
+        r"\documentclass[border=12pt]{standalone}" "\n"
+        r"\usepackage{ctex}" "\n"
+        r"\usepackage{amsmath,amssymb,bm}" "\n"
+        r"\pagestyle{empty}" "\n"
+        r"\begin{document}" "\n"
+        r"\begin{minipage}{170mm}" "\n"
+        r"\setlength{\parindent}{0pt}" "\n"
+        r"\setlength{\parskip}{4pt}" "\n"
+        r"\raggedright" "\n"
+        r"\small" "\n"
+        + body
+        + "\n"
+        + r"\end{minipage}" "\n"
+        + r"\end{document}" "\n"
+    )
+
+
+def _render_pdf_to_png_bytes(pdf_path: Path) -> bytes:
+    document = fitz.open(pdf_path)
+    images: list[Image.Image] = []
+    try:
+        for page in document:
+            pixmap = page.get_pixmap(
+                matrix=fitz.Matrix(_EXPORT_IMAGE_RENDER_SCALE, _EXPORT_IMAGE_RENDER_SCALE),
+                alpha=False,
+            )
+            image = Image.open(io.BytesIO(pixmap.tobytes("png"))).convert("RGB")
+            images.append(image)
+    finally:
+        document.close()
+
+    if not images:
+        raise ExportImageError("导出失败：未生成 PDF 页面。")
+
+    if len(images) == 1:
+        canvas = images[0]
+    else:
+        gap = 24
+        width = max(image.width for image in images)
+        height = sum(image.height for image in images) + gap * (len(images) - 1)
+        canvas = Image.new("RGB", (width, height), "white")
+        offset_y = 0
+        for image in images:
+            canvas.paste(image, (0, offset_y))
+            offset_y += image.height + gap
+            image.close()
+
+    output = io.BytesIO()
+    canvas.save(output, format="PNG")
+    canvas.close()
+    return output.getvalue()
+
+
+def render_review_text_to_png_bytes(source: str) -> bytes:
+    tex_source = _build_export_latex_document(source)
+    with tempfile.TemporaryDirectory(prefix="review_export_") as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        tex_path = temp_dir / "export.tex"
+        pdf_path = temp_dir / "export.pdf"
+        tex_path.write_text(tex_source, encoding="utf-8")
+
+        command = [
+            "lualatex",
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            "-file-line-error",
+            tex_path.name,
+        ]
+        completed = subprocess.run(
+            command,
+            cwd=temp_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=40,
+            check=False,
+        )
+        if completed.returncode != 0 or not pdf_path.is_file():
+            log_tail = "\n".join(completed.stdout.splitlines()[-25:]).strip()
+            detail = f"\n{log_tail}" if log_tail else ""
+            raise ExportImageError(f"LaTeX 编译失败，无法导出图片。{detail}")
+
+        return _render_pdf_to_png_bytes(pdf_path)
+
+
 class ReviewRepository:
     def __init__(self, assignment_config: AssignmentConfig):
         self.assignment_config = assignment_config
@@ -53,6 +352,184 @@ class ReviewRepository:
         self.processed_dir = assignment_config.processed_images_dir
         self.results_dir = assignment_config.results_dir
         self.ui_dir = Path(__file__).resolve().parent / "review_ui"
+        self._export_lock = threading.Lock()
+        self._export_condition = threading.Condition(self._export_lock)
+        self._export_queue: deque[str] = deque()
+        self._export_queued_ids: set[str] = set()
+        self._export_records: dict[str, dict] = {}
+        self._start_export_workers()
+
+    def _start_export_workers(self) -> None:
+        for index in range(_EXPORT_WORKER_COUNT):
+            thread = threading.Thread(
+                target=self._export_worker_loop,
+                name=f"export-cache-{self.assignment_config.assignment_id}-{index + 1}",
+                daemon=True,
+            )
+            thread.start()
+
+    def _get_export_source_path(self, student_id: str) -> Path | None:
+        txt_path = self.get_result_path(student_id)
+        if txt_path.exists() and txt_path.stat().st_size > 0:
+            return txt_path
+        json_path = self.get_result_json_path(student_id)
+        if json_path.exists() and json_path.stat().st_size > 0:
+            return json_path
+        return None
+
+    def _get_export_source_mtime(self, student_id: str) -> float:
+        source_path = self._get_export_source_path(student_id)
+        if source_path is None:
+            return 0.0
+        try:
+            return float(source_path.stat().st_mtime or 0.0)
+        except Exception:
+            return 0.0
+
+    def _snapshot_export_status_locked(self, student_id: str) -> dict:
+        record = self._export_records.get(student_id, {})
+        source_path = self._get_export_source_path(student_id)
+        source_mtime = self._get_export_source_mtime(student_id)
+        cached_source_mtime = float(record.get("sourceMtime") or 0.0)
+        status = str(record.get("status") or "")
+
+        if source_path is None:
+            if status not in {"queued", "rendering"}:
+                status = "missing"
+        elif status not in {"queued", "rendering"}:
+            has_cached_source = isinstance(record.get("sourceText"), str) and bool(record.get("sourceText", "").strip())
+            status = "ready" if has_cached_source and cached_source_mtime >= source_mtime - 1e-6 else "stale"
+
+        error = str(record.get("error") or "").strip()
+        if status == "error" and not error:
+            status = "stale"
+
+        return {
+            "studentId": student_id,
+            "status": status,
+            "ready": status == "ready",
+            "queued": status == "queued",
+            "rendering": status == "rendering",
+            "missing": status == "missing",
+            "error": error,
+            "sourcePath": str(source_path) if source_path else "",
+            "imagePath": "",
+            "imageUrl": "",
+            "sourceMtime": source_mtime,
+            "imageMtime": cached_source_mtime,
+            "updatedAt": float(record.get("updatedAt") or 0.0),
+        }
+
+    def get_export_image_status(self, student_id: str, *, auto_enqueue: bool = False, urgent: bool = False) -> dict:
+        with self._export_condition:
+            status = self._snapshot_export_status_locked(student_id)
+            if auto_enqueue and status["status"] in {"stale", "error"}:
+                self._queue_export_render_locked(student_id, urgent=urgent)
+                status = self._snapshot_export_status_locked(student_id)
+            return dict(status)
+
+    def _queue_export_render_locked(self, student_id: str, *, urgent: bool = False) -> dict:
+        source_path = self._get_export_source_path(student_id)
+        if source_path is None:
+            record = self._export_records.setdefault(student_id, {})
+            record["status"] = "missing"
+            record["error"] = ""
+            record["updatedAt"] = time.time()
+            return self._snapshot_export_status_locked(student_id)
+
+        record = self._export_records.setdefault(student_id, {})
+        record["error"] = ""
+        record["updatedAt"] = time.time()
+
+        if record.get("status") == "rendering":
+            record["needsRerun"] = True
+            return self._snapshot_export_status_locked(student_id)
+
+        if student_id in self._export_queued_ids:
+            if urgent:
+                try:
+                    self._export_queue.remove(student_id)
+                except ValueError:
+                    pass
+                self._export_queue.appendleft(student_id)
+        else:
+            if urgent:
+                self._export_queue.appendleft(student_id)
+            else:
+                self._export_queue.append(student_id)
+            self._export_queued_ids.add(student_id)
+        record["status"] = "queued"
+        self._export_condition.notify()
+        return self._snapshot_export_status_locked(student_id)
+
+    def queue_export_render(self, student_id: str, *, urgent: bool = False) -> dict:
+        with self._export_condition:
+            return self._queue_export_render_locked(student_id, urgent=urgent)
+
+    def _export_worker_loop(self) -> None:
+        while True:
+            with self._export_condition:
+                while not self._export_queue:
+                    self._export_condition.wait()
+                student_id = self._export_queue.popleft()
+                self._export_queued_ids.discard(student_id)
+                record = self._export_records.setdefault(student_id, {})
+                record["status"] = "rendering"
+                record["error"] = ""
+                record["updatedAt"] = time.time()
+                render_source_mtime = self._get_export_source_mtime(student_id)
+
+            success = False
+            error_message = ""
+            source_text = ""
+            try:
+                source_text = self.build_export_image_source(student_id)
+                success = True
+            except Exception as exc:
+                error_message = str(exc)
+
+            with self._export_condition:
+                record = self._export_records.setdefault(student_id, {})
+                latest_source_mtime = self._get_export_source_mtime(student_id)
+                needs_rerun = bool(record.get("needsRerun")) or (
+                    success and latest_source_mtime > render_source_mtime + 1e-6
+                )
+                record["needsRerun"] = False
+                record["updatedAt"] = time.time()
+
+                if success and not needs_rerun:
+                    record["status"] = "ready"
+                    record["error"] = ""
+                    record["sourceText"] = source_text
+                    record["sourceMtime"] = render_source_mtime
+                elif needs_rerun:
+                    if student_id not in self._export_queued_ids:
+                        self._export_queue.appendleft(student_id)
+                        self._export_queued_ids.add(student_id)
+                    record["status"] = "queued"
+                    record["error"] = ""
+                    self._export_condition.notify()
+                else:
+                    record["status"] = "error"
+                    record["error"] = error_message
+                    record["sourceText"] = ""
+                self._export_condition.notify_all()
+
+    def wait_for_export_image(self, student_id: str, timeout_seconds: float = 0.0) -> dict:
+        deadline = time.time() + max(0.0, timeout_seconds)
+        with self._export_condition:
+            status = self._snapshot_export_status_locked(student_id)
+            if status["status"] in {"stale", "error"}:
+                self._queue_export_render_locked(student_id, urgent=True)
+                status = self._snapshot_export_status_locked(student_id)
+
+            while timeout_seconds > 0 and status["status"] in {"queued", "rendering"}:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                self._export_condition.wait(timeout=remaining)
+                status = self._snapshot_export_status_locked(student_id)
+            return dict(status)
 
     def list_students(self) -> list[dict]:
         students: list[dict] = []
@@ -71,6 +548,7 @@ class ReviewRepository:
                         (result_json_path.exists() and result_json_path.stat().st_size > 0)
                         or (result_txt_path.exists() and result_txt_path.stat().st_size > 0)
                     ),
+                    "hasExportImage": False,
                 }
             )
         return students
@@ -164,9 +642,10 @@ class ReviewRepository:
             "id": student_id,
             "images": images,
             "resultJson": result_json,
+            "exportImage": self.get_export_image_status(student_id, auto_enqueue=True, urgent=False),
         }
 
-    def save_result(self, student_id: str, result_json: dict, rendered_text: str | None = None) -> None:
+    def save_result(self, student_id: str, result_json: dict, rendered_text: str | None = None) -> dict:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         text = rendered_text if isinstance(rendered_text, str) else self.render_result_text(result_json)
         enriched_payload = self.enrich_result_json(result_json, rendered_text=text)
@@ -174,6 +653,46 @@ class ReviewRepository:
         json_path.write_text(json.dumps(enriched_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         result_path = self.get_result_path(student_id)
         result_path.write_text(text, encoding="utf-8")
+        return self.queue_export_render(student_id, urgent=True)
+
+    def build_export_image_source(
+        self,
+        student_id: str,
+        result_json: dict | None = None,
+        rendered_text: str | None = None,
+    ) -> str:
+        if isinstance(rendered_text, str):
+            source_text = rendered_text
+        elif isinstance(result_json, dict):
+            source_text = self.render_result_text(result_json)
+        else:
+            result_path = self.get_result_path(student_id)
+            if result_path.exists():
+                source_text = result_path.read_text(encoding="utf-8")
+            else:
+                source_text = self.render_result_text(self.load_result_json(student_id))
+        normalized = source_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not normalized:
+            raise ExportImageError("导出内容为空，无法生成图片。")
+        return normalized
+
+    def get_cached_export_source(self, student_id: str) -> str:
+        with self._export_condition:
+            status = self._snapshot_export_status_locked(student_id)
+            if status["status"] != "ready":
+                raise ExportImageError("导出图片尚未就绪，请稍候。")
+            record = self._export_records.get(student_id, {})
+            source_text = str(record.get("sourceText") or "")
+            if not source_text.strip():
+                raise ExportImageError("导出内容为空，无法生成图片。")
+            return source_text
+
+    def render_cached_export_image_bytes(self, student_id: str, engine: str) -> bytes:
+        normalized_engine = str(engine or "").strip().lower()
+        if normalized_engine != "latex":
+            raise ExportImageError(f"不支持的服务端导出引擎：{engine}")
+        source_text = self.get_cached_export_source(student_id)
+        return render_review_text_to_png_bytes(source_text)
 
     def resolve_ui_asset(self, asset_name: str) -> Path:
         asset_path = (self.ui_dir / asset_name).resolve()
@@ -635,6 +1154,40 @@ def create_handler():
                 }
             )
 
+        def _read_export_settings(self) -> None:
+            engine = get_export_engine_setting()
+            latex_status = _get_latex_environment_status()
+            self.send_json(
+                {
+                    "ok": True,
+                    "exportEngine": engine,
+                    "latexStatus": latex_status,
+                    "storePath": str(LOCAL_SETTINGS_FILE),
+                }
+            )
+
+        def _write_export_settings(self, raw_body: bytes) -> None:
+            try:
+                payload = json.loads(raw_body.decode("utf-8"))
+            except json.JSONDecodeError:
+                self.send_json({"error": "invalid json body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            engine = str(payload.get("exportEngine", "")).strip().lower()
+            try:
+                saved_path = write_export_engine_setting(engine)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            latex_status = _get_latex_environment_status()
+            self.send_json(
+                {
+                    "ok": True,
+                    "exportEngine": engine,
+                    "latexStatus": latex_status,
+                    "storePath": str(saved_path),
+                }
+            )
+
         def _create_week(self, raw_body: bytes) -> None:
             try:
                 payload = json.loads(raw_body.decode("utf-8"))
@@ -818,6 +1371,61 @@ def create_handler():
             lines, total = _read_pipeline_log_lines(task_record, since_line_num, limit_num)
             self.send_json({"ok": True, "task": task_record, "lines": lines, "totalLines": total})
 
+        def _get_export_image_status(self, student_id: str, parsed_url) -> None:
+            repo = _repository
+            if repo is None:
+                self.send_json({"error": "当前未加载作业周，请先在控制台选择周并进入批阅"}, status=HTTPStatus.CONFLICT)
+                return
+            query = parse_qs(parsed_url.query or "")
+            urgent = str((query.get("priority") or [""])[0]).strip().lower() in {"1", "true", "high", "urgent"}
+            auto_enqueue = str((query.get("enqueue") or ["1"])[0]).strip().lower() not in {"0", "false", "no"}
+            force = str((query.get("force") or [""])[0]).strip().lower() in {"1", "true", "yes", "force"}
+            if force:
+                status = repo.queue_export_render(student_id, urgent=True)
+            else:
+                status = repo.get_export_image_status(student_id, auto_enqueue=auto_enqueue, urgent=urgent)
+            self.send_json({"ok": True, "exportImage": status})
+
+        def _export_student_image(self, student_id: str) -> None:
+            repo = _repository
+            if repo is None:
+                self.send_json({"error": "当前未加载作业周，请先在控制台选择周并进入批阅"}, status=HTTPStatus.CONFLICT)
+                return
+
+            status = repo.wait_for_export_image(student_id, timeout_seconds=1.2)
+            if status["status"] != "ready":
+                self.send_json(
+                    {
+                        "error": "导出图片尚未就绪，请稍候。",
+                        "exportImage": status,
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
+                return
+
+            engine = get_export_engine_setting()
+            source_text = repo.get_cached_export_source(student_id)
+            file_name = f"{student_id}-annotations.png"
+            if engine == "latex":
+                image_bytes = repo.render_cached_export_image_bytes(student_id, engine)
+                self.send_binary(
+                    image_bytes,
+                    content_type="image/png",
+                    file_name=file_name,
+                    inline=False,
+                )
+                return
+
+            self.send_json(
+                {
+                    "ok": True,
+                    "fileName": file_name,
+                    "sourceText": source_text,
+                    "exportEngine": engine,
+                    "exportImage": status,
+                }
+            )
+
         def do_GET(self) -> None:
             try:
                 parsed = urlparse(self.path)
@@ -846,6 +1454,16 @@ def create_handler():
                     else:
                         self.send_json({"students": repo.list_students()})
                     return
+                if path.startswith("/api/student/") and path.endswith("/export-image-status"):
+                    if repo is None:
+                        self.send_json({"error": "当前未加载作业周，请先在控制台选择周并进入批阅"}, status=HTTPStatus.CONFLICT)
+                        return
+                    student_id = unquote(path[len("/api/student/"):-len("/export-image-status")].rstrip("/"))
+                    if not student_id:
+                        self.send_error(HTTPStatus.NOT_FOUND)
+                        return
+                    self._get_export_image_status(student_id, parsed)
+                    return
                 if path == "/api/student/":
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -869,6 +1487,9 @@ def create_handler():
                 if path == "/api/apikey":
                     self._read_api_key(parsed)
                     return
+                if path == "/api/export-settings":
+                    self._read_export_settings()
+                    return
                 if path == "/api/pipeline/latest":
                     self._get_latest_pipeline_task(parsed)
                     return
@@ -885,6 +1506,9 @@ def create_handler():
                         return
                     _, student_id, file_name = parts
                     self.serve_file(repo.resolve_image(student_id, file_name))
+                    return
+                if path.startswith("/results-images/"):
+                    self.send_error(HTTPStatus.NOT_FOUND)
                     return
 
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -917,6 +1541,11 @@ def create_handler():
                     raw_body = self.rfile.read(content_length) if content_length > 0 else b""
                     self._write_api_key(raw_body)
                     return
+                if path == "/api/export-settings":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+                    self._write_export_settings(raw_body)
+                    return
                 if path == "/api/weeks/create":
                     content_length = int(self.headers.get("Content-Length", "0"))
                     raw_body = self.rfile.read(content_length) if content_length > 0 else b""
@@ -943,6 +1572,14 @@ def create_handler():
                     self._run_pipeline_task(raw_body)
                     return
 
+                if path.startswith("/api/student/") and path.endswith("/export-image"):
+                    student_id = unquote(path[len("/api/student/"):-len("/export-image")].rstrip("/"))
+                    if not student_id:
+                        self.send_error(HTTPStatus.NOT_FOUND)
+                        return
+                    self._export_student_image(student_id)
+                    return
+
                 if not path.startswith("/api/student/"):
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -965,10 +1602,12 @@ def create_handler():
                     self.send_error(HTTPStatus.BAD_REQUEST, "renderedText must be string")
                     return
 
-                repo.save_result(student_id, result_json, rendered_text)
-                self.send_json({"ok": True})
+                export_status = repo.save_result(student_id, result_json, rendered_text)
+                self.send_json({"ok": True, "exportImage": export_status})
             except FileNotFoundError as exc:
                 self.send_error(HTTPStatus.NOT_FOUND, str(exc))
+            except ExportImageError as exc:
+                self.send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             except json.JSONDecodeError:
                 self.send_error(HTTPStatus.BAD_REQUEST, "invalid json body")
             except Exception as exc:
@@ -1001,6 +1640,28 @@ def create_handler():
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_binary(
+            self,
+            body: bytes,
+            *,
+            content_type: str,
+            file_name: str | None = None,
+            inline: bool = True,
+            status: HTTPStatus = HTTPStatus.OK,
+        ) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            if file_name:
+                disposition = "inline" if inline else "attachment"
+                quoted_name = quote(file_name)
+                self.send_header(
+                    "Content-Disposition",
+                    f"{disposition}; filename*=UTF-8''{quoted_name}",
+                )
             self.end_headers()
             self.wfile.write(body)
 

@@ -158,6 +158,12 @@ AI 负责生成批改建议，教师保留最终判断。
 
 - Prompt 模板：
   - 查看 / 编辑 / 保存 / 恢复默认
+- 图片导出：
+  - 可选择默认导出引擎：`LaTeX` / `KaTeX`
+  - `LaTeX` 走后端 `lualatex -> PDF -> PNG`
+  - `KaTeX` 走浏览器本地渲染 + `html2canvas`
+  - 控制台会显示当前系统下 LaTeX 环境检测结果（Windows/macOS/Linux/WSL）
+  - 可在批阅页点击“重新生成图片”强制把当前学生重新入队生成
 - subjects.json：
   - 默认表单编辑（新手模式）
   - 可切换高级 JSON 编辑
@@ -453,6 +459,8 @@ http://127.0.0.1:8765
 - 控制台可直接启动前处理/批改任务（绑定当前选中周）
 - 统计信息实时显示任务日志与状态
 - 审阅台支持左侧切换学生、中间看图、右侧编辑批注
+- 控制台支持保存默认图片导出引擎（`LaTeX` / `KaTeX`）
+- 批阅页支持“复制图片 / 导出图片 / 重新生成图片”
 - `Ctrl+S` / `Cmd+S` 保存学生批注
 
 ## 最常用命令
@@ -536,6 +544,19 @@ python run_preprocessing.py --assignment configs/assignments/第二周.json --re
 - `pymupdf`
 - `Pillow`
 - 已配置 API Key（推荐通过控制台保存到 `configs/env/local.env`，也支持系统环境变量）
+
+图片导出引擎补充说明：
+
+- `KaTeX`：
+  - 不依赖系统 LaTeX
+  - 由当前浏览器本地渲染后导出 PNG
+- `LaTeX`：
+  - 依赖系统可执行的 `lualatex`
+  - Windows：建议安装 MiKTeX 或 TeX Live，并确保 `lualatex` 在 PATH 中
+  - macOS：建议安装 MacTeX，并确保 `lualatex` 可在终端直接执行
+  - Linux：建议安装 TeX Live
+  - WSL：需要在 WSL 内部安装 TeX Live，不能只装宿主 Windows 侧 LaTeX
+- 控制台“图片导出”卡片会直接显示当前环境下 LaTeX 是否可用，以及缺少的命令/宏包提示
 
 ## 隐私与合规说明
 

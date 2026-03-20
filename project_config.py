@@ -11,7 +11,9 @@ ASSIGNMENTS_DIR = REPO_ROOT / "configs" / "assignments"
 DEFAULT_ANSWER_KEY_FILENAME = "answer.tex"
 LOCAL_ENV_DIR = REPO_ROOT / "configs" / "env"
 LOCAL_ENV_FILE = LOCAL_ENV_DIR / "local.env"
+LOCAL_SETTINGS_FILE = LOCAL_ENV_DIR / "review_ui_settings.json"
 ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+EXPORT_ENGINE_VALUES = {"latex", "katex"}
 
 
 @dataclass
@@ -103,6 +105,32 @@ def get_local_env_var(name: str) -> str:
     if not env_name:
         return ""
     return read_local_env().get(env_name, "")
+
+
+def read_local_settings() -> dict:
+    if not LOCAL_SETTINGS_FILE.is_file():
+        return {}
+    try:
+        data = json.loads(LOCAL_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def get_export_engine_setting() -> str:
+    value = str(read_local_settings().get("export_engine") or "").strip().lower()
+    return value if value in EXPORT_ENGINE_VALUES else "katex"
+
+
+def write_export_engine_setting(engine: str) -> Path:
+    normalized = str(engine or "").strip().lower()
+    if normalized not in EXPORT_ENGINE_VALUES:
+        raise ValueError(f"非法导出引擎：{engine}")
+    settings = read_local_settings()
+    settings["export_engine"] = normalized
+    LOCAL_ENV_DIR.mkdir(parents=True, exist_ok=True)
+    LOCAL_SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return LOCAL_SETTINGS_FILE
 
 
 def resolve_api_key(env_name: str) -> tuple[str, str]:

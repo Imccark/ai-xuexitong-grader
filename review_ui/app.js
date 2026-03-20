@@ -25,9 +25,12 @@ const state = {
   pipelinePolling: false,
   pipelinePollTimer: null,
   isExporting: false,
-  exportPrewarmScheduled: false,
-  exportPrewarmed: false,
-  exportPrewarmAttempted: false,
+  exportEngine: "katex",
+  exportSettingsLoaded: false,
+  latexStatus: null,
+  currentExportImage: null,
+  exportStatusPollTimer: null,
+  exportStatusPollToken: 0,
 };
 const ITEM_MUTABLE_MODULE_KEYWORDS = ["错误细节", "证明题审查", "改进建议"];
 
@@ -43,6 +46,8 @@ const saveBtnEl = document.getElementById("saveBtn");
 const prevStudentBtnEl = document.getElementById("prevStudentBtn");
 const nextStudentBtnEl = document.getElementById("nextStudentBtn");
 const exportImageBtnEl = document.getElementById("exportImageBtn");
+const copyImageBtnEl = document.getElementById("copyImageBtn");
+const regenerateImageBtnEl = document.getElementById("regenerateImageBtn");
 const appShellEl = document.getElementById("appShell");
 const mainLayoutEl = document.getElementById("mainLayout");
 const mainResizeHandleEl = document.getElementById("mainResizeHandle");
@@ -59,12 +64,14 @@ const deleteWeekCardContentEl = document.getElementById("deleteWeekCardContent")
 const preprocessTaskCardContentEl = document.getElementById("preprocessTaskCardContent");
 const dashboardLogsContentEl = document.getElementById("dashboardLogsContent");
 const gradingTaskCardContentEl = document.getElementById("gradingTaskCardContent");
+const exportEngineCardContentEl = document.getElementById("exportEngineCardContent");
 const cardCurrentWeekEl = document.getElementById("cardCurrentWeek");
 const cardWeekResourceEl = document.getElementById("cardWeekResource");
 const cardDeleteWeekEl = document.getElementById("cardDeleteWeek");
 const cardPreprocessTaskEl = document.getElementById("cardPreprocessTask");
 const cardDashboardLogsEl = document.getElementById("cardDashboardLogs");
 const cardGradingTaskEl = document.getElementById("cardGradingTask");
+const cardExportEngineEl = document.getElementById("cardExportEngine");
 const promptFileNameEl = document.getElementById("promptFileName");
 const promptStateLabelEl = document.getElementById("promptStateLabel");
 const promptEditorEl = document.getElementById("promptEditor");
@@ -104,10 +111,13 @@ const apiCmdCmdEl = document.getElementById("apiCmdCmd");
 const copyApiCmdLinuxBtnEl = document.getElementById("copyApiCmdLinuxBtn");
 const copyApiCmdPowershellBtnEl = document.getElementById("copyApiCmdPowershellBtn");
 const copyApiCmdCmdBtnEl = document.getElementById("copyApiCmdCmdBtn");
+const exportRenderRootEl = document.getElementById("exportRenderRoot");
 
 const SIDEBAR_COLLAPSED_KEY = "review_ui_sidebar_collapsed";
 const MAIN_LEFT_WIDTH_KEY = "review_ui_main_left_width";
-const EXPORT_RESOURCE_TIMEOUT_MS = 8000;
+const NEARBY_EXPORT_PRELOAD_RADIUS = 2;
+const EXPORT_RENDER_WIDTH = 1080;
+const EXPORT_RENDER_SCALE = 2;
 
 function setExportButtonBusy(isBusy, label) {
   if (!exportImageBtnEl) {
@@ -117,69 +127,20 @@ function setExportButtonBusy(isBusy, label) {
   exportImageBtnEl.textContent = label || (isBusy ? "导出中..." : "导出图片");
 }
 
-function getExportResourceState() {
-  const missing = [];
-
-  if (typeof html2canvas !== "function") {
-    missing.push("html2canvas");
+function setCopyButtonBusy(isBusy, label) {
+  if (!copyImageBtnEl) {
+    return;
   }
-  if (typeof marked === "undefined" || typeof marked.parse !== "function") {
-    missing.push("marked");
-  }
-  if (typeof DOMPurify === "undefined" || typeof DOMPurify.sanitize !== "function") {
-    missing.push("DOMPurify");
-  }
-  if (typeof katex === "undefined" || typeof katex.renderToString !== "function") {
-    missing.push("katex");
-  }
-  if (!document.fonts || typeof document.fonts.ready?.then !== "function") {
-    missing.push("document.fonts");
-  } else if (document.fonts.status !== "loaded") {
-    missing.push("fonts:not_loaded");
-  } else {
-    const katexFonts = ["KaTeX_Main", "KaTeX_Math", "KaTeX_Size1"];
-    const missingKatexFonts = katexFonts.filter((name) => !document.fonts.check(`16px ${name}`));
-    if (missingKatexFonts.length) {
-      missing.push(`katex_fonts:${missingKatexFonts.join(",")}`);
-    }
-  }
-
-  return {
-    ready: missing.length === 0,
-    missing,
-  };
+  copyImageBtnEl.disabled = Boolean(isBusy);
+  copyImageBtnEl.textContent = label || (isBusy ? "复制中..." : "复制图片");
 }
 
-async function waitForExportResources(timeoutMs = EXPORT_RESOURCE_TIMEOUT_MS) {
-  if (document.fonts && typeof document.fonts.load === "function") {
-    try {
-      await Promise.allSettled([
-        document.fonts.load("16px KaTeX_Main"),
-        document.fonts.load("16px KaTeX_Math"),
-        document.fonts.load("16px KaTeX_Size1"),
-      ]);
-    } catch (error) {
-      window.console.warn("warm fonts failed", error);
-    }
+function setRegenerateButtonBusy(isBusy, label) {
+  if (!regenerateImageBtnEl) {
+    return;
   }
-
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const stateNow = getExportResourceState();
-    if (stateNow.ready) {
-      return { ok: true, missing: [] };
-    }
-    await new Promise((resolve) => window.setTimeout(resolve, 80));
-  }
-
-  const finalState = getExportResourceState();
-  return { ok: false, missing: finalState.missing };
-}
-
-async function waitForStableFrames(frameCount = 2) {
-  for (let index = 0; index < Math.max(1, frameCount); index += 1) {
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-  }
+  regenerateImageBtnEl.disabled = Boolean(isBusy);
+  regenerateImageBtnEl.textContent = label || (isBusy ? "重新生成中..." : "重新生成图片");
 }
 
 function runWhenIdle(callback, timeout = 300) {
@@ -188,45 +149,6 @@ function runWhenIdle(callback, timeout = 300) {
     return;
   }
   window.setTimeout(() => callback(), Math.min(120, timeout));
-}
-
-function isCanvasBlank(canvas) {
-  if (!(canvas instanceof HTMLCanvasElement)) {
-    return true;
-  }
-  const width = canvas.width;
-  const height = canvas.height;
-  if (!width || !height) {
-    return true;
-  }
-
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) {
-    return false;
-  }
-
-  const samplePoints = [
-    [0.1, 0.1],
-    [0.5, 0.1],
-    [0.9, 0.1],
-    [0.1, 0.5],
-    [0.5, 0.5],
-    [0.9, 0.5],
-    [0.1, 0.9],
-    [0.5, 0.9],
-    [0.9, 0.9],
-  ];
-
-  for (const [xRatio, yRatio] of samplePoints) {
-    const x = Math.max(0, Math.min(width - 1, Math.floor(width * xRatio)));
-    const y = Math.max(0, Math.min(height - 1, Math.floor(height * yRatio)));
-    const pixel = context.getImageData(x, y, 1, 1).data;
-    if (pixel[3] > 0) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 function fetchJson(url, options) {
@@ -492,7 +414,6 @@ function switchView(viewName) {
 
   if (viewName === "review") {
     initLayoutControls();
-    prewarmExportPipeline();
   } else if (viewName === "dashboard") {
     loadWeeks().catch((error) => {
       if (weekCountEl) {
@@ -1261,85 +1182,7 @@ function renderResultText(payload) {
   return `${lines.join("\n")}\n`;
 }
 
-function buildExportSnapshotNode(payload) {
-  const container = document.createElement("div");
-  container.className = "export-snapshot";
-
-  const title = document.createElement("h2");
-  title.textContent = `批注导出 · ${payload.student_name_or_id || state.currentStudentId || ""}`;
-  container.appendChild(title);
-
-  const overall = document.createElement("p");
-  overall.className = "export-overall";
-  overall.textContent = `整体情况：${payload.overall || ""}`;
-  container.appendChild(overall);
-
-  Object.entries(payload.modules || {}).forEach(([moduleName, block]) => {
-    const card = document.createElement("section");
-    card.className = "export-module-card";
-
-    const header = document.createElement("h3");
-    header.textContent = moduleName;
-    card.appendChild(header);
-
-    const items = Array.isArray(block?.items) && block.items.length ? block.items : [block?.raw_text || ""];
-    items
-      .map((item) => String(item || "").trim())
-      .filter(Boolean)
-      .forEach((item, index) => {
-        const itemWrap = document.createElement("div");
-        itemWrap.className = "export-item-row";
-
-        const idx = document.createElement("span");
-        idx.className = "export-item-order";
-        idx.textContent = `${index + 1}.`;
-        itemWrap.appendChild(idx);
-
-        const preview = document.createElement("div");
-        preview.className = "export-item-content";
-        renderMarkdownLatex(item, preview, { preferDisplayForMatrices: true });
-        itemWrap.appendChild(preview);
-
-        card.appendChild(itemWrap);
-      });
-
-    container.appendChild(card);
-  });
-
-  return container;
-}
-
-function buildExportStrategies({ baseScale }) {
-  return [
-    {
-      foreignObjectRendering: false,
-      scale: baseScale,
-    },
-    {
-      foreignObjectRendering: true,
-      scale: Math.min(baseScale, 1.6),
-    },
-  ];
-}
-
-async function blobToClipboardOrDownload(blob, fileName) {
-  const canWriteClipboard =
-    Boolean(navigator.clipboard) && typeof window.ClipboardItem !== "undefined" && document.hasFocus();
-
-  if (canWriteClipboard) {
-    try {
-      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-      return { mode: "clipboard" };
-    } catch (error) {
-      const message = String(error?.message || "");
-      const focusError =
-        error?.name === "NotAllowedError" || /Document is not focused|focus/i.test(message);
-      if (!focusError) {
-        throw error;
-      }
-    }
-  }
-
+function downloadBlob(blob, fileName) {
   const objectUrl = URL.createObjectURL(blob);
   try {
     const anchor = document.createElement("a");
@@ -1348,57 +1191,497 @@ async function blobToClipboardOrDownload(blob, fileName) {
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
-    return { mode: "download" };
   } finally {
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200);
   }
 }
 
-async function prewarmExportPipeline() {
-  if (state.exportPrewarmScheduled || state.exportPrewarmAttempted) {
+function getExportFileNameFromResponse(response, fallbackFileName) {
+  const header = response.headers.get("Content-Disposition") || "";
+  const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch (error) {
+      return utf8Match[1];
+    }
+  }
+  const plainMatch = header.match(/filename=\"?([^\";]+)\"?/i);
+  if (plainMatch && plainMatch[1]) {
+    return plainMatch[1];
+  }
+  return fallbackFileName;
+}
+
+function clearExportImageStatusPolling() {
+  if (state.exportStatusPollTimer) {
+    window.clearTimeout(state.exportStatusPollTimer);
+    state.exportStatusPollTimer = null;
+  }
+  state.exportStatusPollToken += 1;
+}
+
+function normalizeExportImageStatus(status) {
+  if (!status || typeof status !== "object") {
+    return null;
+  }
+  return {
+    status: String(status.status || ""),
+    ready: Boolean(status.ready),
+    queued: Boolean(status.queued),
+    rendering: Boolean(status.rendering),
+    missing: Boolean(status.missing),
+    error: String(status.error || ""),
+    imageUrl: String(status.imageUrl || ""),
+    updatedAt: Number(status.updatedAt || 0),
+  };
+}
+
+function applyExportImageStatus(status) {
+  const normalized = normalizeExportImageStatus(status);
+  state.currentExportImage = normalized;
+  if (state.isExporting) {
+    return normalized;
+  }
+  if (normalized?.queued || normalized?.rendering) {
+    setRegenerateButtonBusy(false, "图片生成中...");
+    setExportButtonBusy(false, "图片生成中...");
+    setCopyButtonBusy(false, "图片生成中...");
+  } else {
+    setRegenerateButtonBusy(false, "重新生成图片");
+    setExportButtonBusy(false, "导出图片");
+    setCopyButtonBusy(false, "复制图片");
+  }
+  return normalized;
+}
+
+async function fetchExportImageStatus(options = {}) {
+  if (!state.currentStudentId) {
+    return null;
+  }
+  const { priorityHigh = false, enqueue = true } = options;
+  const data = await requestExportImageStatus(state.currentStudentId, { priorityHigh, enqueue });
+  return applyExportImageStatus(data);
+}
+
+async function requestExportImageStatus(studentId, options = {}) {
+  if (!studentId) {
+    return null;
+  }
+  const { priorityHigh = false, enqueue = true, force = false } = options;
+  const query = new URLSearchParams();
+  if (enqueue) {
+    query.set("enqueue", "1");
+  }
+  if (priorityHigh) {
+    query.set("priority", "high");
+  }
+  if (force) {
+    query.set("force", "1");
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const data = await fetchJson(`/api/student/${encodeURIComponent(studentId)}/export-image-status${suffix}`);
+  return normalizeExportImageStatus(data.exportImage);
+}
+
+function getNearbyStudentIds(studentId, radius = NEARBY_EXPORT_PRELOAD_RADIUS) {
+  const sourceList = state.filteredStudents.length ? state.filteredStudents : state.students;
+  const index = sourceList.findIndex((student) => student.id === studentId);
+  if (index === -1) {
+    return [];
+  }
+  const result = [];
+  for (let offset = 1; offset <= Math.max(0, radius); offset += 1) {
+    const prev = sourceList[index - offset];
+    const next = sourceList[index + offset];
+    if (prev?.id) {
+      result.push(prev.id);
+    }
+    if (next?.id) {
+      result.push(next.id);
+    }
+  }
+  return result;
+}
+
+function warmNearbyExportImages(studentId) {
+  const centerId = String(studentId || "").trim();
+  if (!centerId) {
     return;
   }
-  state.exportPrewarmScheduled = true;
-  state.exportPrewarmAttempted = true;
+  const nearbyIds = getNearbyStudentIds(centerId);
+  if (!nearbyIds.length) {
+    return;
+  }
+  Promise.allSettled(nearbyIds.map((id) => requestExportImageStatus(id, { enqueue: true, priorityHigh: false }))).catch(
+    () => {}
+  );
+}
 
-  runWhenIdle(async () => {
-    let host = null;
+function startExportImageStatusPolling(options = {}) {
+  const { priorityHigh = false, intervalMs = 900 } = options;
+  if (!state.currentStudentId) {
+    return;
+  }
+
+  clearExportImageStatusPolling();
+  const token = state.exportStatusPollToken;
+
+  const poll = async () => {
+    if (token !== state.exportStatusPollToken || !state.currentStudentId) {
+      return;
+    }
     try {
-      const readyState = await waitForExportResources(2500);
-      if (!readyState.ok || typeof html2canvas !== "function") {
+      const status = await fetchExportImageStatus({ priorityHigh, enqueue: true });
+      if (token !== state.exportStatusPollToken) {
         return;
       }
-
-      host = document.createElement("div");
-      host.className = "export-render-host";
-      const prewarmNode = document.createElement("div");
-      prewarmNode.className = "export-snapshot";
-      prewarmNode.style.width = "320px";
-      prewarmNode.innerHTML = '<p class="export-overall">warm up \\(x_1 + x_2 = 0\\)</p>';
-      renderMarkdownLatex("warm up \\(x_1 + x_2 = 0\\)", prewarmNode, { preferDisplayForMatrices: true });
-      host.appendChild(prewarmNode);
-      document.body.appendChild(host);
-
-      await waitForStableFrames(2);
-      await html2canvas(prewarmNode, {
-        backgroundColor: "#fffdfa",
-        scale: 1,
-        logging: false,
-        useCORS: false,
-        imageTimeout: 500,
-        removeContainer: true,
-        foreignObjectRendering: false,
-      });
-      state.exportPrewarmed = true;
-    } catch (error) {
-      window.console.warn("export prewarm failed", error);
-    } finally {
-      if (host) {
-        host.remove();
+      if (status?.queued || status?.rendering) {
+        state.exportStatusPollTimer = window.setTimeout(poll, intervalMs);
+      } else {
+        state.exportStatusPollTimer = null;
+        if (!state.isSaving && !state.isExporting && !isDirty()) {
+          if (status?.ready) {
+            updateSaveStatus("已保存，图片已就绪");
+          } else if (status?.error) {
+            updateSaveStatus("图片生成失败");
+          }
+        }
       }
-      state.exportPrewarmScheduled = false;
+    } catch (error) {
+      if (token !== state.exportStatusPollToken) {
+        return;
+      }
+      state.exportStatusPollTimer = window.setTimeout(poll, Math.max(intervalMs, 1200));
     }
-  }, 700);
+  };
+
+  state.exportStatusPollTimer = window.setTimeout(poll, 0);
+}
+
+async function waitForExportImageReady(options = {}) {
+  const { priorityHigh = false, timeoutMs = 45000 } = options;
+  const startedAt = Date.now();
+  let status = await fetchExportImageStatus({ priorityHigh, enqueue: true });
+  while (status && !status.ready) {
+    if (status.error) {
+      throw new Error(status.error || "图片生成失败");
+    }
+    if (status.missing) {
+      throw new Error("当前学生还没有可导出的已保存结果，请先保存。");
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error("图片仍在生成中，请稍后再试。");
+    }
+    updateSaveStatus(status.rendering ? "图片生成中..." : "图片排队中...");
+    await new Promise((resolve) => window.setTimeout(resolve, 800));
+    status = await fetchExportImageStatus({ priorityHigh: true, enqueue: true });
+  }
+  return status;
+}
+
+function isExportMathEscaped(source, index) {
+  let backslashCount = 0;
+  let cursor = index - 1;
+  while (cursor >= 0 && source[cursor] === "\\") {
+    backslashCount += 1;
+    cursor -= 1;
+  }
+  return backslashCount % 2 === 1;
+}
+
+function findExportMathCloser(source, start, opener, closer) {
+  let cursor = start;
+  while (cursor < source.length) {
+    if (source.startsWith(closer, cursor) && !isExportMathEscaped(source, cursor)) {
+      if (closer === "$" && opener === "$" && source.startsWith("$$", cursor)) {
+        cursor += 1;
+        continue;
+      }
+      return cursor;
+    }
+    cursor += 1;
+  }
+  return -1;
+}
+
+function tokenizeExportSource(source) {
+  const normalized = String(source || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const tokens = [];
+  const textBuffer = [];
+  let cursor = 0;
+
+  const flushText = () => {
+    if (textBuffer.length) {
+      tokens.push({ type: "text", value: textBuffer.join("") });
+      textBuffer.length = 0;
+    }
+  };
+
+  while (cursor < normalized.length) {
+    if (normalized.startsWith("$$", cursor) && !isExportMathEscaped(normalized, cursor)) {
+      const closing = findExportMathCloser(normalized, cursor + 2, "$$", "$$");
+      if (closing >= 0) {
+        flushText();
+        tokens.push({ type: "display_math", value: normalized.slice(cursor + 2, closing) });
+        cursor = closing + 2;
+        continue;
+      }
+    }
+    if (normalized.startsWith("\\[", cursor)) {
+      const closing = findExportMathCloser(normalized, cursor + 2, "\\[", "\\]");
+      if (closing >= 0) {
+        flushText();
+        tokens.push({ type: "display_math", value: normalized.slice(cursor + 2, closing) });
+        cursor = closing + 2;
+        continue;
+      }
+    }
+    if (normalized.startsWith("\\(", cursor)) {
+      const closing = findExportMathCloser(normalized, cursor + 2, "\\(", "\\)");
+      if (closing >= 0) {
+        flushText();
+        tokens.push({ type: "inline_math", value: normalized.slice(cursor + 2, closing) });
+        cursor = closing + 2;
+        continue;
+      }
+    }
+    if (normalized[cursor] === "$" && !isExportMathEscaped(normalized, cursor)) {
+      const closing = findExportMathCloser(normalized, cursor + 1, "$", "$");
+      if (closing >= 0) {
+        flushText();
+        tokens.push({ type: "inline_math", value: normalized.slice(cursor + 1, closing) });
+        cursor = closing + 1;
+        continue;
+      }
+    }
+    textBuffer.push(normalized[cursor]);
+    cursor += 1;
+  }
+
+  flushText();
+  return tokens;
+}
+
+function appendExportTextNodes(container, value) {
+  const segments = String(value || "").split("\n");
+  segments.forEach((segment, index) => {
+    if (segment) {
+      const textSpan = document.createElement("span");
+      textSpan.textContent = segment;
+      Object.assign(textSpan.style, {
+        display: "inline",
+        whiteSpace: "pre-wrap",
+        wordBreak: "normal",
+        overflowWrap: "break-word",
+      });
+      container.appendChild(textSpan);
+    }
+    if (index < segments.length - 1) {
+      container.appendChild(document.createElement("br"));
+    }
+  });
+}
+
+function createExportRenderTree(sourceText) {
+  const shell = document.createElement("div");
+  Object.assign(shell.style, {
+    position: "fixed",
+    left: "-100000px",
+    top: "0",
+    width: `${EXPORT_RENDER_WIDTH}px`,
+    padding: "24px",
+    background: "#ffffff",
+    color: "#111111",
+    boxSizing: "border-box",
+    zIndex: "-1",
+    pointerEvents: "none",
+  });
+
+  const card = document.createElement("div");
+  Object.assign(card.style, {
+    width: "100%",
+    background: "#ffffff",
+    color: "#111111",
+    fontFamily: '"Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif',
+    fontSize: "18px",
+    fontWeight: "400",
+    lineHeight: "1.7",
+    letterSpacing: "0",
+    wordBreak: "normal",
+    overflowWrap: "break-word",
+    whiteSpace: "normal",
+    padding: "20px 24px",
+    boxSizing: "border-box",
+  });
+
+  const tokens = tokenizeExportSource(sourceText);
+  tokens.forEach((token) => {
+    if (token.type === "text") {
+      appendExportTextNodes(card, token.value);
+      return;
+    }
+
+    const expr = String(token.value || "").trim();
+    if (!expr) {
+      return;
+    }
+
+    const target = document.createElement("span");
+    if (token.type === "display_math") {
+      Object.assign(target.style, {
+        display: "block",
+        margin: "0.6em 0",
+        minHeight: "1.4em",
+      });
+    } else {
+      Object.assign(target.style, {
+        display: "inline",
+        margin: "0 0.04em",
+      });
+    }
+
+    try {
+      katex.render(expr, target, {
+        throwOnError: false,
+        displayMode: token.type === "display_math",
+        trust: false,
+        strict: "ignore",
+        output: "htmlAndMathml",
+      });
+    } catch (error) {
+      target.textContent = expr;
+    }
+    card.appendChild(target);
+  });
+
+  shell.appendChild(card);
+  return shell;
+}
+
+async function renderExportSourceToBlob(sourceText) {
+  if (!exportRenderRootEl) {
+    throw new Error("导出容器不存在。");
+  }
+  if (typeof html2canvas !== "function") {
+    throw new Error("html2canvas 未加载，无法导出图片。");
+  }
+
+  const renderTree = createExportRenderTree(sourceText);
+  exportRenderRootEl.replaceChildren(renderTree);
+
+  try {
+    if (document.fonts && document.fonts.ready) {
+      await document.fonts.ready.catch(() => {});
+    }
+    await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+
+    const canvas = await html2canvas(renderTree, {
+      backgroundColor: "#ffffff",
+      scale: EXPORT_RENDER_SCALE,
+      useCORS: false,
+      logging: false,
+      removeContainer: true,
+    });
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    canvas.width = 0;
+    canvas.height = 0;
+    if (!(blob instanceof Blob)) {
+      throw new Error("浏览器未能生成 PNG 数据。");
+    }
+    return blob;
+  } finally {
+    exportRenderRootEl.replaceChildren();
+  }
+}
+
+function getCurrentExportEngine() {
+  return state.exportEngine === "latex" ? "latex" : "katex";
+}
+
+async function fetchReadyExportImagePayload() {
+  if (!state.currentStudentId) {
+    throw new Error("请先选择一位学生。");
+  }
+
+  if (isDirty()) {
+    await saveCurrentStudent({ silentStatus: true });
+  }
+  await waitForExportImageReady({ priorityHigh: true, timeoutMs: 45000 });
+  const response = await fetch(`/api/student/${encodeURIComponent(state.currentStudentId)}/export-image`, {
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    const raw = await response.text();
+    let message = "导出失败";
+    try {
+      const data = raw ? JSON.parse(raw) : {};
+      message = data.error || data.message || message;
+    } catch (error) {
+      if (raw.trim()) {
+        message = raw.trim();
+      }
+    }
+    throw new Error(message);
+  }
+
+  const engine = getCurrentExportEngine();
+  if (engine === "latex") {
+    const blob = await response.blob();
+    const fallbackFileName = `${state.currentStudentId || "annotations"}-${Date.now()}.png`;
+    const fileName = getExportFileNameFromResponse(response, fallbackFileName);
+    return { engine, fileName, blob, sourceText: "" };
+  }
+
+  const data = await response.json();
+  const fileName = String(data.fileName || `${state.currentStudentId || "annotations"}-${Date.now()}.png`);
+  const sourceText = String(data.sourceText || "");
+  if (!sourceText.trim()) {
+    throw new Error("导出内容为空。");
+  }
+  return { engine, fileName, sourceText, blob: null };
+}
+
+async function regenerateCurrentExportImage() {
+  if (!state.currentStudentId) {
+    window.alert("请先选择一位学生，再重新生成图片。");
+    return;
+  }
+  if (state.isExporting) {
+    return;
+  }
+
+  if (isDirty()) {
+    await saveCurrentStudent({ silentStatus: true });
+  }
+
+  state.isExporting = true;
+  setRegenerateButtonBusy(true, "重新生成中...");
+  setExportButtonBusy(true, "导出图片");
+  setCopyButtonBusy(true, "复制图片");
+  updateSaveStatus("重新生成图片中...");
+
+  try {
+    const status = await requestExportImageStatus(state.currentStudentId, {
+      enqueue: true,
+      priorityHigh: true,
+      force: true,
+    });
+    applyExportImageStatus(status);
+    startExportImageStatusPolling({ priorityHigh: true });
+    await waitForExportImageReady({ priorityHigh: true, timeoutMs: 45000 });
+    updateSaveStatus("图片已重新生成");
+    window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
+  } catch (error) {
+    updateSaveStatus("重新生成失败");
+    window.alert(error?.message || "重新生成失败");
+  } finally {
+    state.isExporting = false;
+    setRegenerateButtonBusy(false, "重新生成图片");
+    applyExportImageStatus(state.currentExportImage);
+  }
 }
 
 async function exportAnnotationsAsImage() {
@@ -1411,89 +1694,60 @@ async function exportAnnotationsAsImage() {
   }
 
   state.isExporting = true;
-  setExportButtonBusy(true, "准备导出...");
-  updateSaveStatus("导出准备中...");
+  setExportButtonBusy(true, "导出中...");
+  setCopyButtonBusy(true, "复制图片");
+  updateSaveStatus("导出中...");
 
-  let host = null;
   try {
-    const resourceState = await waitForExportResources();
-    if (!resourceState.ok) {
-      updateSaveStatus("导出资源未就绪");
-      window.alert(`导出资源仍在加载，请稍后再试。\n缺失项：${resourceState.missing.join(", ") || "未知"}`);
-      return;
-    }
-
-    const payload = getCurrentPayloadFromUI();
-    const snapshotNode = buildExportSnapshotNode(payload);
-    const hasMath = Boolean(snapshotNode.querySelector(".katex"));
-
-    host = document.createElement("div");
-    host.className = "export-render-host";
-    host.appendChild(snapshotNode);
-    document.body.appendChild(host);
-
-    await waitForStableFrames(hasMath ? 4 : 2);
-
-    const rect = snapshotNode.getBoundingClientRect();
-    const dpr = Number(window.devicePixelRatio || 1);
-    const baseScale = hasMath ? Math.min(2.0, Math.max(1.5, dpr)) : Math.min(1.6, Math.max(1.2, dpr * 0.95));
-    const baseOptions = {
-      backgroundColor: "#fffdfa",
-      scale: baseScale,
-      useCORS: true,
-      logging: false,
-      scrollX: 0,
-      scrollY: 0,
-      imageTimeout: 1000,
-      removeContainer: true,
-      windowWidth: Math.ceil(rect.width + 24),
-      windowHeight: Math.ceil(rect.height + 24),
-    };
-
-    const strategies = buildExportStrategies({ baseScale });
-
-    let canvas = null;
-    let lastError = null;
-    updateSaveStatus("导出中...");
-    setExportButtonBusy(true, "导出中...");
-    for (const strategy of strategies) {
-      try {
-        canvas = await html2canvas(snapshotNode, { ...baseOptions, ...strategy });
-        if (canvas && !(strategy.foreignObjectRendering && isCanvasBlank(canvas))) {
-          break;
-        }
-        canvas = null;
-      } catch (error) {
-        lastError = error;
-      }
-    }
-
-    if (!canvas) {
-      throw lastError || new Error("导出失败：未生成图像画布");
-    }
-
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (!blob) {
-      throw new Error("生成 PNG 失败");
-    }
-
-    const fileName = `${state.currentStudentId || "annotations"}-${Date.now()}.png`;
-    const output = await blobToClipboardOrDownload(blob, fileName);
-    if (output.mode === "clipboard") {
-      updateSaveStatus("图片已复制");
-    } else {
-      updateSaveStatus("已下载 PNG");
-    }
+    const { fileName, sourceText, blob: sourceBlob, engine } = await fetchReadyExportImagePayload();
+    const blob = engine === "latex" ? sourceBlob : await renderExportSourceToBlob(sourceText);
+    downloadBlob(blob, fileName);
+    updateSaveStatus("已下载 PNG");
     window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
   } catch (error) {
     updateSaveStatus("导出失败");
     window.alert(error?.message || "导出失败");
   } finally {
-    if (host) {
-      host.remove();
-    }
     state.isExporting = false;
-    setExportButtonBusy(false, "导出图片");
+    applyExportImageStatus(state.currentExportImage);
+  }
+}
+
+async function copyAnnotationsImage() {
+  if (!state.currentStudentId) {
+    window.alert("请先选择一位学生，再复制图片。");
+    return;
+  }
+  if (state.isExporting) {
+    return;
+  }
+  if (!navigator.clipboard || typeof window.ClipboardItem === "undefined") {
+    window.alert("当前浏览器不支持复制图片到剪贴板。");
+    return;
+  }
+
+  state.isExporting = true;
+  setExportButtonBusy(true, "导出图片");
+  setCopyButtonBusy(true, "复制中...");
+  updateSaveStatus("复制中...");
+
+  try {
+    const { sourceText, blob: sourceBlob, engine } = await fetchReadyExportImagePayload();
+    const blob = engine === "latex" ? sourceBlob : await renderExportSourceToBlob(sourceText);
+    await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
+    updateSaveStatus("图片已复制");
+    window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
+  } catch (error) {
+    const message = String(error?.message || "");
+    if (/NotAllowedError|focus/i.test(message)) {
+      window.alert("复制失败：请保持页面聚焦，并允许浏览器访问剪贴板。");
+    } else {
+      window.alert(error?.message || "复制失败");
+    }
+    updateSaveStatus("复制失败");
+  } finally {
+    state.isExporting = false;
+    applyExportImageStatus(state.currentExportImage);
   }
 }
 
@@ -1869,11 +2123,39 @@ function renderDashboardSummaryCards() {
     }
   }
 
+  if (exportEngineCardContentEl) {
+    const engineLabel = state.exportEngine === "latex" ? "LaTeX" : "KaTeX";
+    const latexStatus = state.latexStatus || {};
+    const platformLabel = String(latexStatus.platform?.label || latexStatus.platform?.system || "当前系统");
+    const latexAvailable = Boolean(latexStatus.available);
+    const latexDetail = String(latexStatus.detail || "").trim();
+    const latexHint = String(latexStatus.hint || "").trim();
+    exportEngineCardContentEl.innerHTML = `
+      <div class="export-engine-card">
+        <p class="summary-tip">选择默认图片导出引擎。LaTeX 依赖本机 <code>lualatex</code>，KaTeX 使用浏览器本地渲染。</p>
+        <select id="exportEngineSelect" class="export-engine-select">
+          <option value="latex" ${state.exportEngine === "latex" ? "selected" : ""}>LaTeX</option>
+          <option value="katex" ${state.exportEngine === "katex" ? "selected" : ""}>KaTeX</option>
+        </select>
+        <div class="export-engine-actions">
+          <button id="saveExportEngineBtn" type="button" class="config-btn primary">保存默认引擎</button>
+        </div>
+        <p class="export-engine-status">当前默认：${engineLabel}${state.exportSettingsLoaded ? "" : "（未加载完成）"}</p>
+        <p class="export-engine-status">${platformLabel} LaTeX 检测：${latexAvailable ? "可用" : "不可用"}</p>
+        ${latexDetail ? `<p class="export-engine-status">${latexDetail}</p>` : ""}
+        ${latexHint ? `<p class="export-engine-status">${latexHint}</p>` : ""}
+      </div>
+    `;
+    exportEngineCardContentEl.querySelector("#saveExportEngineBtn")?.addEventListener("click", () => {
+      saveExportSettings().catch((error) => window.alert(`保存导出设置失败：${error.message}`));
+    });
+  }
+
   applyDashboardCardSizing();
 }
 
 function applyDashboardCardSizing() {
-  [cardCurrentWeekEl, cardWeekResourceEl, cardDeleteWeekEl, cardPreprocessTaskEl, cardDashboardLogsEl, cardGradingTaskEl].forEach((card) => {
+  [cardCurrentWeekEl, cardWeekResourceEl, cardDeleteWeekEl, cardPreprocessTaskEl, cardDashboardLogsEl, cardGradingTaskEl, cardExportEngineEl].forEach((card) => {
     if (!card) return;
     card.classList.remove("span-2", "span-4", "align-with-week-resource");
   });
@@ -2200,6 +2482,45 @@ async function loadPromptFile() {
   }
 }
 
+async function loadExportSettings() {
+  try {
+    const data = await fetchJson("/api/export-settings");
+    const engine = String(data.exportEngine || "").trim().toLowerCase();
+    state.exportEngine = engine === "latex" ? "latex" : "katex";
+    state.latexStatus = data.latexStatus && typeof data.latexStatus === "object" ? data.latexStatus : null;
+    state.exportSettingsLoaded = true;
+    renderDashboardSummaryCards();
+    return data;
+  } catch (error) {
+    state.exportEngine = "katex";
+    state.exportSettingsLoaded = false;
+    state.latexStatus = null;
+    renderDashboardSummaryCards();
+    throw error;
+  }
+}
+
+async function saveExportSettings() {
+  const selectEl = document.getElementById("exportEngineSelect");
+  const exportEngine = String(selectEl?.value || state.exportEngine || "katex").trim().toLowerCase();
+  const data = await fetchJson("/api/export-settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+    body: JSON.stringify({ exportEngine }),
+  });
+  state.exportEngine = String(data.exportEngine || exportEngine).trim().toLowerCase() === "latex" ? "latex" : "katex";
+  state.latexStatus = data.latexStatus && typeof data.latexStatus === "object" ? data.latexStatus : null;
+  state.exportSettingsLoaded = true;
+  renderDashboardSummaryCards();
+  if (state.exportEngine === "latex" && state.latexStatus && !state.latexStatus.available) {
+    const detail = String(state.latexStatus.detail || "").trim();
+    const hint = String(state.latexStatus.hint || "").trim();
+    window.alert(`已保存默认导出引擎为 LaTeX，但当前环境检测为不可用。${detail ? `\n${detail}` : ""}${hint ? `\n${hint}` : ""}`);
+  }
+  setWeekManageStatus(`已保存默认导出引擎：${state.exportEngine === "latex" ? "LaTeX" : "KaTeX"}`, "ok");
+  return data;
+}
+
 async function viewPromptTemplate() {
   state.promptEditable = false;
   if (!state.promptLoaded) {
@@ -2433,6 +2754,13 @@ function initPromptAndSubjectsPanels() {
 }
 
 async function ensureDashboardConfigsLoaded() {
+  if (!state.exportSettingsLoaded) {
+    try {
+      await loadExportSettings();
+    } catch (error) {
+      window.console.error(error);
+    }
+  }
   if (!state.promptLoaded) {
     try {
       await loadPromptFile();
@@ -2526,6 +2854,7 @@ async function loadStudent(studentId, silent = false) {
     }
   }
 
+  clearExportImageStatusPolling();
   const data = await fetchJson(`/api/student/${encodeURIComponent(studentId)}`);
   const payload = normalizePayload(data.resultJson);
   state.currentStudentId = data.id;
@@ -2540,19 +2869,36 @@ async function loadStudent(studentId, silent = false) {
   renderImages(data.images);
   renderModules(payload);
   renderStudentList();
-  updateSaveStatus("已加载");
+  const exportStatus = applyExportImageStatus(data.exportImage);
+  fetchExportImageStatus({ priorityHigh: true, enqueue: true }).catch((error) => {
+    window.console.warn("refresh current export image status failed", error);
+  });
+  warmNearbyExportImages(data.id);
+  if (exportStatus?.queued || exportStatus?.rendering) {
+    updateSaveStatus("已加载，正在预生成图片...");
+    startExportImageStatusPolling();
+  } else if (exportStatus?.ready) {
+    updateSaveStatus("已加载");
+  } else if (exportStatus?.error) {
+    updateSaveStatus("图片生成失败");
+  } else {
+    updateSaveStatus("已加载");
+  }
 }
 
-async function saveCurrentStudent() {
+async function saveCurrentStudent(options = {}) {
+  const { silentStatus = false } = options;
   if (!state.currentStudentId || state.isSaving) {
-    return;
+    return null;
   }
 
   state.isSaving = true;
-  updateSaveStatus("保存中...");
+  if (!silentStatus) {
+    updateSaveStatus("保存中...");
+  }
   try {
     const currentPayload = getCurrentPayloadFromUI();
-    await fetchJson(`/api/student/${encodeURIComponent(state.currentStudentId)}`, {
+    const data = await fetchJson(`/api/student/${encodeURIComponent(state.currentStudentId)}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2569,10 +2915,20 @@ async function saveCurrentStudent() {
       student.hasResult = Object.keys(currentPayload.modules || {}).length > 0;
     }
     renderStudentList();
-    updateSaveStatus("已保存");
+    const exportStatus = applyExportImageStatus(data.exportImage);
+    if (exportStatus?.queued || exportStatus?.rendering) {
+      updateSaveStatus("已保存，正在预生成图片...");
+      startExportImageStatusPolling({ priorityHigh: true });
+    } else if (!silentStatus) {
+      updateSaveStatus("已保存");
+    }
+    return data;
   } catch (error) {
     updateSaveStatus("保存失败");
-    window.alert(error.message);
+    if (!silentStatus) {
+      window.alert(error.message);
+    }
+    throw error;
   } finally {
     state.isSaving = false;
   }
@@ -2598,8 +2954,14 @@ studentSearchEl.addEventListener("input", renderStudentList);
 saveBtnEl.addEventListener("click", saveCurrentStudent);
 prevStudentBtnEl.addEventListener("click", () => moveStudent(-1));
 nextStudentBtnEl.addEventListener("click", () => moveStudent(1));
+if (regenerateImageBtnEl) {
+  regenerateImageBtnEl.addEventListener("click", regenerateCurrentExportImage);
+}
 if (exportImageBtnEl) {
   exportImageBtnEl.addEventListener("click", exportAnnotationsAsImage);
+}
+if (copyImageBtnEl) {
+  copyImageBtnEl.addEventListener("click", copyAnnotationsImage);
 }
 if (viewPromptBtnEl) {
   viewPromptBtnEl.addEventListener("click", () => {
@@ -2708,4 +3070,3 @@ initPromptAndSubjectsPanels();
 initLayoutControls();
 initNavTabs();
 enterDashboardWithConfigInit();
-prewarmExportPipeline();
