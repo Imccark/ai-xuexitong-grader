@@ -13,6 +13,7 @@
 - 只读 Agent 结果和证据审阅界面。
 - 匿名独立模型裁判包、校验器和指标计算工具。
 - 离线 Python 测试、Playwright 界面测试和 GitHub Actions。
+- 面向普通用户的精简 Windows 运行包。
 
 ### Changed
 

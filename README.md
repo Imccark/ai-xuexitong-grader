@@ -1,88 +1,213 @@
-# AI 学习通作业批改助手 v2.0
+# AI 学习通作业批改助手
 
-![Python](https://img.shields.io/badge/Python-3.13%2B-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Workflow](https://img.shields.io/badge/Workflow-LangGraph-1C3C3C)
+![Platform](https://img.shields.io/badge/Platform-Xuexitong-orange)
+![Version](https://img.shields.io/badge/Version-2.0.0-0A7EA4)
 
-面向学习通导出作业的本地批改工具。v2.0 使用 LangGraph 编排多智能体证据链，对 PDF、图片和 DOCX 作业进行预处理、逐题批改、风险复核与确定性汇总，并在本地只读界面展示结果和证据。
+AI-powered grader for Xuexitong assignments
 
-> 本项目不会自动向学习通提交成绩。默认配置中的 `auto_submit` 为 `false`；任何远程提交都应由使用者单独确认。
+一个用于批量处理和批改学习通作业的 AI 助教工具。
 
-## v2.0 主要变化
+本项目使用多模态大模型 + Python 自动化，实现：
 
-- LangGraph 证据优先批改流程，支持本地 SQLite checkpoint 和断点恢复。
-- grader、verifier、符号审计和确定性 aggregator 形成有界纠错循环。
-- 页面方向检测、透视校正、图像质量评估和可选的本地布局/OCR。
-- API 调用必须显式启用在线模式，并设置学生数、调用次数和 token 预算。
-- Agent 结果与证据只读展示，保留旧结果作为回滚材料。
-- 学生数据、运行产物、密钥文件和本地自动化技能默认不进入 Git。
+- 批量整理学生提交的 PDF、Word 和图片作业
+- 自动校正页面方向和拍照透视
+- 根据教师提供的标准答案逐题批改
+- 自动复查容易看错的符号、步骤和结论
+- 生成结构化批改结果和评语
+- 在本地网页中查看批改结论与原图证据
 
-完整变更见 [CHANGELOG.md](CHANGELOG.md)，v1 迁移与回滚见 [迁移手册](docs/langgraph-multi-agent-grading-migration-and-rollback.md)。
+## Quick Start
 
-## 系统要求
+推荐从 [Releases](https://github.com/Imccark/ai-xuexitong-grader/releases/tag/v2.0.0) 下载 `ai-xuexitong-grader-v2.0.0-windows.zip`，解压后在目录中打开 PowerShell。
 
-- Python 3.13.x
-- [uv](https://docs.astral.sh/uv/)
-- Node.js 20+（仅界面端到端测试或 KaTeX 图片导出需要）
-- Windows 10/11 为主要测试平台
-
-本仓库以源码应用方式发布，不提供可独立安装的 Python wheel。
-
-## 安装
-
-克隆仓库后，在项目根目录运行：
+安装 Python 依赖：
 
 ```powershell
-uv sync --extra orientation --group dev
-npm ci
+uv sync --extra orientation --no-dev
 ```
 
-仓库内置约 7 MB 的页面方向 ONNX 模型。PaddleOCR 布局和 OCR 权重不随仓库发布，需要时请放入 `models/document_layout/` 和 `models/ocr/` 对应目录。
+启动本地控制台：
 
-## 配置密钥
+```powershell
+uv run python review_app.py --port 8765
+```
 
-复制示例配置：
+浏览器打开：
+
+```text
+http://127.0.0.1:8765
+```
+
+第一次使用时，在控制台依次完成：
+
+1. 配置 API Key
+2. 创建新一周作业
+3. 放入标准答案和学生作业
+4. 运行图片预处理
+5. 启动 AI 批改
+6. 查看 Agent 结果
+
+## 项目目标
+
+让整班作业的整理、预处理、批改和结果查看形成一套可重复执行的流程，减少逐份打开文件和手工整理评语的时间。
+
+v2.0 默认使用多 Agent 批改流程。系统会先识别题目和学生答案，再进行批改与复查，最后生成统一格式的结果。
+
+## 项目特点
+
+- 支持 PDF、DOCX、PNG、JPG 等常见作业格式
+- 支持 LaTeX 标准答案
+- 支持整班作业批量预处理和批改
+- 自动恢复图片方向并校正拍照透视
+- 对负号、小数点、等号、分数线和涂改痕迹进行重点复查
+- 支持任务中断后继续运行
+- 提供本地网页控制台和结果查看界面
+- 可导出带批注的作业图片
+- 默认不会自动向学习通提交成绩
+
+## 运行依赖
+
+基础运行需要：
+
+- Python 3.13
+- uv
+- 可访问的多模态模型 API
+
+可选依赖：
+
+- Node.js 20+：使用 KaTeX 导出批注图片时需要
+- Playwright Chromium：使用 KaTeX 导出时需要
+- LuaLaTeX：选择 LaTeX 导出方式时需要
+- PaddleOCR 模型：启用本地布局识别和 OCR 时需要
+
+如果只进行预处理、AI 批改和网页查看，安装 Python 依赖即可。
+
+需要 KaTeX 图片导出时再运行：
+
+```powershell
+npm ci
+npx playwright install chromium
+```
+
+## 适用场景
+
+- 学习通导出的整班手写作业
+- 教师已有标准答案，希望自动生成逐题批改结果
+- 作业中包含公式、矩阵、证明题或计算过程
+- 希望统一保存每周作业和批改记录
+- 希望在本地查看原图、增强图和 AI 判断依据
+
+## 工作流程
+
+```text
+学习通导出的作业
+        │
+        ▼
+创建作业周并放入标准答案
+        │
+        ▼
+本地图片预处理
+        │
+        ▼
+AI 逐题批改与自动复查
+        │
+        ▼
+生成批改结果
+        │
+        ▼
+本地网页查看和导出
+```
+
+## 三分钟上手
+
+### 第一步：准备环境
+
+安装 Python 3.13 和 uv，然后在项目目录运行：
+
+```powershell
+uv sync --extra orientation --no-dev
+```
+
+### 第二步：启动控制台
+
+```powershell
+uv run python review_app.py --port 8765
+```
+
+打开 `http://127.0.0.1:8765`。
+
+控制台会显示作业周、API Key、预处理、批改和结果查看入口。推荐第一次使用时直接通过控制台完成所有操作。
+
+### 第三步：配置 API Key
+
+在控制台点击“配置 API Key”，填写百炼兼容接口的 Key。
+
+也可以复制示例文件：
 
 ```powershell
 Copy-Item -LiteralPath "configs/env/local.env.example" -Destination "configs/env/local.env"
 ```
 
-然后只在本机的 `configs/env/local.env` 中填写：
+然后编辑：
 
 ```dotenv
 DASHSCOPE_API_KEY=
-OPENAI_API_KEY=
 ```
 
-- `DASHSCOPE_API_KEY`：候选批改使用的百炼兼容接口密钥。
-- `OPENAI_API_KEY`：仅在显式启用可选 Responses API 裁判时需要。
-- `configs/env/local.env` 已被 Git 忽略；不要把真实密钥写进源码、命令行、日志或截图。
+`configs/env/local.env` 只保存在本机，不要发送给他人，也不要提交到 GitHub。
 
-## 基本流程
+### 第四步：创建作业周
 
-### 1. 创建作业周
+在控制台输入作业周名称并点击创建，或者运行：
 
 ```powershell
-uv run python create_week.py "作业周名称"
+uv run python create_week.py "新作业周"
 ```
 
-将标准答案和从学习通导出的原始作业放入新建目录。作业图片、学生文件和运行结果默认被 Git 忽略。
+创建后会得到：
 
-### 2. 预处理
+```text
+新作业周/
+├── answer.tex
+├── raw_submissions/
+├── processed_images/
+└── results/
+```
+
+将教师标准答案保存为 `answer.tex`，把从学习通导出的学生作业放入 `raw_submissions/`。
+
+### 第五步：预处理作业
+
+控制台点击“运行预处理”，或者运行：
 
 ```powershell
-uv run python run_preprocessing.py --assignment "configs/assignments/作业周名称.json" --max-workers 4
+uv run python run_preprocessing.py `
+  --assignment "configs/assignments/新作业周.json" `
+  --max-workers 4
 ```
 
-预处理在本地执行格式转换、页面拉平和方向校正，不会调用外部模型 API。
+预处理会：
 
-### 3. LangGraph 批改
+- 解压学生提交文件
+- 将 PDF 和 DOCX 转成图片
+- 修正 EXIF 方向
+- 检测纸张边缘并进行透视校正
+- 判断页面是否需要旋转
+- 把整理后的图片写入 `processed_images/`
 
-在线调用必须同时显式提供范围和预算：
+这一步在本地运行，不调用大模型 API。
+
+### 第六步：运行 AI 批改
+
+推荐直接点击控制台中的“启动批改”。控制台会按照当前学生数量自动设置本次运行范围和预算。
+
+命令行方式：
 
 ```powershell
 uv run python run_batch_grading.py `
-  --assignment "configs/assignments/作业周名称.json" `
+  --assignment "configs/assignments/新作业周.json" `
   --engine candidate `
   --online `
   --max-students 10 `
@@ -91,76 +216,122 @@ uv run python run_batch_grading.py `
   --max-output-tokens 50000
 ```
 
-省略 `--online` 或必要预算时，candidate 引擎会拒绝发起远程调用。结果保存在作业目录的 `agent_artifacts/` 中，不覆盖旧版 `results/`。
+请根据实际学生数量修改 `--max-students`。调用次数和 token 参数是单名学生的上限，用于避免任务异常时持续消耗额度。
 
-### 4. 查看结果
+### 第七步：查看结果
+
+批改完成后，在控制台点击“Agent 结果”。
+
+结果页面可以查看：
+
+- 学生整体批改状态
+- 每道题的正确、部分错误或错误结论
+- AI 转写的学生答案
+- 批改理由和风险提示
+- 对应的作业页和证据位置
+- 原图、标准化图片和增强图片
+
+结果页为只读展示，避免误操作修改已经生成的 Agent 结果。
+
+## 命令行使用
+
+### 创建作业周
 
 ```powershell
-uv run python review_app.py --assignment "configs/assignments/作业周名称.json" --port 8765
+uv run python create_week.py "新作业周"
 ```
 
-浏览器打开 `http://127.0.0.1:8765`。界面展示 Agent 结论、风险状态、证据图片和边界框，不提供人工改判或自动提交入口。
+### 预处理
 
-## LangGraph 流程
+```powershell
+uv run python run_preprocessing.py --assignment "configs/assignments/新作业周.json" --max-workers 4
+```
+
+### 批量批改
+
+```powershell
+uv run python run_batch_grading.py --assignment "configs/assignments/新作业周.json" --engine candidate --online --max-students 10 --max-calls 60 --max-input-tokens 250000 --max-output-tokens 50000
+```
+
+### 启动结果页面
+
+```powershell
+uv run python review_app.py --assignment "configs/assignments/新作业周.json" --port 8765
+```
+
+## 目录结构示例
 
 ```text
-作业页 → 页面观察/布局 → 题目路由 → 转写
-     → grader 候选判断 → verifier 对抗复核
-     → 必要时局部符号审计/有界纠错
-     → 确定性 aggregator → candidate_result.json
+ai-xuexitong-grader/
+├── configs/
+│   ├── agent_pipeline.json
+│   ├── subjects.json
+│   ├── assignments/
+│   └── env/
+├── grading_graph/
+├── models/
+├── prompts/
+├── review_ui/
+├── create_week.py
+├── run_preprocessing.py
+├── run_batch_grading.py
+└── review_app.py
 ```
 
-关键配置位于 `configs/agent_pipeline.json`：
+每个作业周的数据单独保存在对应目录中：
 
-- `feature_flag=candidate`：v2 默认使用 Agent 结果源。
-- `shadow.auto_submit=false`：禁止自动提交成绩。
-- `budgets`：每名学生的调用和 token 上限。
-- `retry`：仅对明确的瞬时错误进行有限重试。
-- `local_layout`：控制本地布局模型、OCR 和失败回退策略。
-
-## 测试
-
-离线测试不会调用真实模型服务：
-
-```powershell
-uv run pytest -q -m "not online"
+```text
+新作业周/
+├── answer.tex
+├── raw_submissions/
+│   ├── 学生作业_A.zip
+│   └── 学生作业_B.pdf
+├── processed_images/
+├── agent_artifacts/
+└── results/
 ```
 
-界面测试：
+## 常见问题
+
+### 找不到 API Key
+
+确认控制台中配置的环境变量名称与 `configs/subjects.json` 中的 `api_key_env` 一致。默认使用 `DASHSCOPE_API_KEY`。
+
+### 预处理后图片方向不正确
+
+项目自带页面方向模型。如果少量页面仍然旋转错误，可先检查原文件的 EXIF 信息和拍摄角度，再重新运行预处理。
+
+### 本地布局模型不可用
+
+运行包不会附带体积较大的 PaddleOCR 布局和 OCR 权重。缺少这些权重时，批改流程会使用配置中的备用页面观察方式。
+
+### 批改命令提示缺少预算
+
+命令行在线批改必须同时提供 `--online`、`--max-students`、`--max-calls`、`--max-input-tokens` 和 `--max-output-tokens`。通过控制台启动时会自动补齐。
+
+### 无法导出批注图片
+
+如果选择 KaTeX 导出，请确认已经运行：
 
 ```powershell
+npm ci
 npx playwright install chromium
-npm test
 ```
 
-在线测试带有 `online` 标记，必须显式授权并提供预算，不能在普通 CI 中运行。
+如果选择 LaTeX 导出，请确认系统可以使用 `lualatex`。
 
-## 数据与隐私
+## 使用提醒
 
-- `.codex/skills/`、`configs/teacher_labeling.json`、`configs/env/local.env` 不纳入公开仓库。
-- 原始作业、学生图片、姓名/学号映射、批改结果、checkpoint、缓存、运行日志和训练数据均已加入忽略规则。
-- 远程多模态批改会把完成任务所需的作业图像发送给所配置的模型服务。使用前应确认学校政策、学生授权和服务商的数据处理条款。
-- 日志、Graph state、artifact 和前端接口不得保存或返回 API Key。
-- 发布前请运行仓库与 Git 历史的密钥扫描；发现疑似真实密钥时应先轮换，再处理历史记录。
-
-更多安全报告方式见 [SECURITY.md](SECURITY.md)。
-
-## 项目结构
-
-```text
-grading_graph/       LangGraph 状态、节点、预算和适配器
-evaluation/          匿名评测包、裁判校验和指标工具
-review_ui/           本地只读审阅界面
-configs/             公开运行配置；私有配置被忽略
-models/              可公开分发的本地推理模型与模型说明
-tests/               Python 离线测试
-e2e/                 Playwright 界面测试
-```
-
-## 发布与贡献
-
-提交代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。公开发布不得包含学生数据、真实 API Key、浏览器登录状态、私有教师标注配置或本地自动化技能。
+- 学生作业可能包含姓名、学号和手写内容，请妥善保管本地作业目录。
+- 使用在线模型批改时，作业图片会发送到你所配置的模型服务。
+- 不要把 API Key 写进公开文件、截图或 Git 提交。
+- AI 批改结果可能存在误判，正式使用前建议抽查结果。
+- 项目默认不会自动向学习通提交成绩。
 
 ## License
 
 [MIT](LICENSE)
+
+## 作者
+
+[Imccark](https://github.com/Imccark)
