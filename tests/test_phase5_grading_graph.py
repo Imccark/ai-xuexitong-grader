@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from grading_graph.graph import _symbol_audit_image_refs, build_grading_graph, migrate_graph_state
+from grading_graph.graph import GraphExecutionSettings, _symbol_audit_image_refs, build_grading_graph, migrate_graph_state
 from grading_graph.adapters.batch import candidate_has_provider_error, run_student_candidate
 from grading_graph.adapters.batch import run_candidate_states
 from grading_graph.adapters.rerun import run_targeted_question_rerun
@@ -25,9 +25,12 @@ from grading_graph.schemas import (
     PageArtifact,
     QuestionJob,
     QuestionResult,
+    RiskLevel,
     SymbolCandidate,
     TranscriptionSpan,
+    GraphState,
 )
+from grading_graph.state import GradingGraphState
 from grading_graph.nodes.grader import GradingProviderError, QuestionGrader
 from grading_graph.nodes.verifier import TargetedVerifier
 from grading_graph.budget import RateLimitedJsonProvider
@@ -1329,3 +1332,54 @@ def test_graph_state_migration_is_idempotent_and_rejects_future_versions() -> No
     assert migrate_graph_state(migrated) == migrated
     with pytest.raises(ValueError, match="unsupported graph state schema version"):
         migrate_graph_state({"schema_version": "2.0"})
+
+
+def test_runtime_channels_and_canonical_graph_state_cannot_drift() -> None:
+    assert set(GradingGraphState.__annotations__) == set(GraphState.model_fields)
+
+
+def test_pipeline_retry_and_verification_config_is_consumed_by_graph(monkeypatch) -> None:
+    observed: dict[str, int] = {}
+
+    def fake_grade(self, job, transcription, **kwargs):
+        observed["provider_retries"] = self.max_retries
+        observed["missing_rubric_retries"] = self.missing_rubric_retries
+        return QuestionResult(
+            question_id=QuestionJob.model_validate(job).question_id,
+            verdict="correct",
+            confidence=0.6,
+            needs_verification=True,
+            risk_level="high",
+        )
+
+    def fake_verify(self, result, **kwargs):
+        observed["verification_rounds"] = self.max_rounds
+        return result.model_copy(update={"needs_verification": False, "risk_level": RiskLevel.LOW})
+
+    monkeypatch.setattr("grading_graph.graph.QuestionGrader.grade", fake_grade)
+    monkeypatch.setattr("grading_graph.graph.TargetedVerifier.verify", fake_verify)
+    settings = GraphExecutionSettings.from_pipeline_config(
+        {
+            "retry": {"max_attempts": 1},
+            "agent_loop": {
+                "missing_rubric_retry_max": 0,
+                "max_verification_rounds": 1,
+            },
+        }
+    )
+    build_grading_graph(GraphProvider({}), execution_settings=settings).invoke(
+        {
+            "graph_version": "test",
+            "run_id": "configured-graph",
+            "assignment_id": "第一周",
+            "student_id": "student",
+            "question_jobs": {"1.1.1": _job("1.1.1")},
+            "transcriptions": {"1.1.1": [_span("1.1.1")]},
+            "budget": Budget(max_calls=3, max_input_tokens=10000, max_output_tokens=1000).model_dump(),
+        }
+    )
+    assert observed == {
+        "provider_retries": 0,
+        "missing_rubric_retries": 0,
+        "verification_rounds": 1,
+    }

@@ -18,6 +18,7 @@
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "model": "qwen3.7-plus",
     "api_key_env": "DASHSCOPE_API_KEY",
+    "max_concurrency": 2,
     "invalid_proxy_sentinel": "ignore_only_loopback_port_9",
     "honor_real_system_proxies": true
   },

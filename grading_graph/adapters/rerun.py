@@ -7,7 +7,7 @@ from typing import Any
 
 from grading_graph.budget import BudgetLedger, RateLimitedJsonProvider
 from grading_graph.cache import JsonResponseCache
-from grading_graph.graph import build_grading_graph
+from grading_graph.graph import GraphExecutionSettings, build_grading_graph
 from grading_graph.schemas import (
     AnswerManifest,
     Budget,
@@ -168,6 +168,7 @@ def run_targeted_question_rerun(
     budget: Budget,
     checkpoint_path: Path | str | None = None,
     cache_dir: Path | str | None = None,
+    pipeline_config: dict[str, Any] | None = None,
 ) -> CandidateResult:
     """Rerun exactly one question and merge it into a new candidate version."""
     state = build_targeted_rerun_input(
@@ -182,13 +183,24 @@ def run_targeted_question_rerun(
     cache = JsonResponseCache(cache_dir) if cache_dir is not None else None
     limited_provider = provider if isinstance(provider, RateLimitedJsonProvider) else RateLimitedJsonProvider(provider)
     if checkpoint_path is None:
-        app = build_grading_graph(limited_provider, cache=cache, budget_ledger=ledger)
+        app = build_grading_graph(
+            limited_provider,
+            cache=cache,
+            budget_ledger=ledger,
+            execution_settings=GraphExecutionSettings.from_pipeline_config(pipeline_config),
+        )
         output = app.invoke(state)
     else:
         from grading_graph.checkpoint import open_sqlite_checkpointer
 
         with open_sqlite_checkpointer(checkpoint_path) as checkpointer:
-            app = build_grading_graph(limited_provider, checkpointer=checkpointer, cache=cache, budget_ledger=ledger)
+            app = build_grading_graph(
+                limited_provider,
+                checkpointer=checkpointer,
+                cache=cache,
+                budget_ledger=ledger,
+                execution_settings=GraphExecutionSettings.from_pipeline_config(pipeline_config),
+            )
             output = app.invoke(state, config={"configurable": {"thread_id": run_id}})
     targeted = CandidateResult.model_validate(output["candidate"])
     targeted_errors = [

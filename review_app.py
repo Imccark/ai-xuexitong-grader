@@ -816,6 +816,7 @@ class ReviewRepository:
                     budget=budget,
                     checkpoint_path=checkpoint_path,
                     cache_dir=cache_root,
+                    pipeline_config=config,
                 )
             except Exception as exc:
                 error_type = str(getattr(exc, "error_type", "") or type(exc).__name__)

@@ -58,6 +58,25 @@ class BudgetLedger:
                 raise BudgetExceededError("output-token budget exhausted")
             self._snapshot = BudgetSnapshot(self._snapshot.calls, self._snapshot.input_tokens, next_total)
 
+    def restore(self, usage: dict[str, Any] | None) -> None:
+        """Restore counters persisted after an earlier graph node/checkpoint."""
+
+        if not usage:
+            return
+        restored = BudgetSnapshot(
+            max(0, int(usage.get("calls", 0) or 0)),
+            max(0, int(usage.get("input_tokens", 0) or 0)),
+            max(0, int(usage.get("output_tokens", 0) or 0)),
+        )
+        with self._lock:
+            if restored.calls > self.limits["max_calls"]:
+                raise BudgetExceededError("restored model call budget exceeds limit")
+            if restored.input_tokens > self.limits["max_input_tokens"]:
+                raise BudgetExceededError("restored input-token budget exceeds limit")
+            if restored.output_tokens > self.limits["max_output_tokens"]:
+                raise BudgetExceededError("restored output-token budget exceeds limit")
+            self._snapshot = restored
+
 
 class BudgetedJsonProvider:
     def __init__(self, provider: Any, ledger: BudgetLedger) -> None:

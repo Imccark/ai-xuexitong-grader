@@ -96,6 +96,9 @@ def main() -> int:
     provider = DashScopeOpenAIProvider.from_environment(max_output_tokens=args.max_output_tokens)
     checkpoint_dir = Path(args.checkpoint_dir).resolve() if args.checkpoint_dir else artifact_root / "agent_artifacts" / "_checkpoints"
     cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else None
+    pipeline_config = json.loads(
+        (Path(__file__).resolve().parent / "configs" / "agent_pipeline.json").read_text(encoding="utf-8")
+    )
 
     summary = run_candidate_states(
         provider=provider,
@@ -104,6 +107,7 @@ def main() -> int:
         checkpoint_dir=checkpoint_dir,
         cache_dir=cache_dir,
         max_students=args.max_students,
+        pipeline_config=pipeline_config,
     )
     print(json.dumps(summary.__dict__, ensure_ascii=False))
     return 1 if summary.failed or summary.stop_reason else 0

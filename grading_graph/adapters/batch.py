@@ -7,11 +7,12 @@ import hashlib
 import time
 from typing import Any, Iterable
 
-from grading_graph.graph import build_grading_graph
+from grading_graph.graph import GraphExecutionSettings, build_grading_graph, build_image_grading_graph
 from grading_graph.nodes.image_quality import RECTIFICATION_VERSION
 from grading_graph.review import ReviewStore
 from grading_graph.schemas import Budget, CandidateResult
 from grading_graph.store import atomic_write_json, canonical_hash, canonical_json
+from grading_graph.state import graph_state_payload, migrate_graph_state
 
 
 @dataclass(frozen=True)
@@ -256,6 +257,7 @@ def run_student_candidate(
     artifact_root: Path | str,
     checkpoint_path: Path | str | None = None,
     cache_dir: Path | str | None = None,
+    pipeline_config: dict[str, Any] | None = None,
 ) -> CandidateResult:
     """Run one student through the candidate graph and persist candidate-only output.
 
@@ -264,7 +266,9 @@ def run_student_candidate(
     """
     # Fail before graph execution if a caller accidentally tries to place credentials
     # in the serializable graph state.
-    canonical_json(_serializable(graph_input))
+    serialized_input = _serializable(graph_input)
+    canonical_json(serialized_input)
+    graph_input = migrate_graph_state(serialized_input)
     store = ReviewStore(artifact_root)
     existing = store.load_candidate(str(graph_input.get("student_id", "")))
     if (
@@ -285,7 +289,12 @@ def run_student_candidate(
     cache = JsonResponseCache(cache_dir) if cache_dir is not None else None
     limited_provider = provider if isinstance(provider, RateLimitedJsonProvider) else RateLimitedJsonProvider(provider)
     with checkpoint_context as checkpointer:
-        app = build_grading_graph(limited_provider, checkpointer=checkpointer, cache=cache)
+        app = build_grading_graph(
+            limited_provider,
+            checkpointer=checkpointer,
+            cache=cache,
+            execution_settings=GraphExecutionSettings.from_pipeline_config(pipeline_config),
+        )
         config = {"configurable": {"thread_id": str(graph_input.get("run_id", "run-unknown"))}}
         output = app.invoke(graph_input, config=config) if checkpointer is not None else app.invoke(graph_input)
     candidate = CandidateResult.model_validate(output["candidate"])
@@ -317,8 +326,9 @@ def run_student_candidate_from_images(
     local_layout_config: dict[str, Any] | None = None,
     local_layout_backend: Any = None,
     question_label_reader: Any = None,
+    pipeline_config: dict[str, Any] | None = None,
 ) -> CandidateResult:
-    """Prepare a student from processed pages and run the candidate graph."""
+    """Run the checkpointed parent graph from processed pages to candidate."""
     store = ReviewStore(artifact_root)
     existing = store.load_candidate(student_id)
     if (
@@ -331,44 +341,50 @@ def run_student_candidate_from_images(
     from grading_graph.budget import BudgetLedger
     from grading_graph.budget import RateLimitedJsonProvider
     from grading_graph.cache import JsonResponseCache
-    from grading_graph.pipeline import build_student_graph_input
-
     ledger = BudgetLedger(budget.model_dump(mode="json"))
     cache = JsonResponseCache(cache_dir) if cache_dir is not None else None
     limited_provider = provider if isinstance(provider, RateLimitedJsonProvider) else RateLimitedJsonProvider(provider)
+    settings = GraphExecutionSettings.from_pipeline_config(pipeline_config)
     started = time.perf_counter()
-    graph_input = build_student_graph_input(
-        processed_student_dir=processed_student_dir,
-        answer_manifest_path=answer_manifest_path,
-        artifact_root=artifact_root,
-        provider=limited_provider,
-        assignment_id=assignment_id,
-        student_id=student_id,
-        run_id=run_id,
-        budget=budget,
-        cache=cache,
-        budget_ledger=ledger,
-        local_layout_config=local_layout_config,
-        local_layout_backend=local_layout_backend,
-        question_label_reader=question_label_reader,
-    )
+    launch_state = {
+        "schema_version": "1.0",
+        "graph_version": "langgraph-v3-evidence-first",
+        "run_id": run_id,
+        "assignment_id": assignment_id,
+        "student_id": student_id,
+        "budget": budget.model_dump(mode="json"),
+        "processed_student_dir": str(Path(processed_student_dir).resolve()),
+        "answer_manifest_path": str(Path(answer_manifest_path).resolve()),
+        "artifact_root": str(Path(artifact_root).resolve()),
+        "local_layout_config": dict(
+            local_layout_config
+            if local_layout_config is not None
+            else (pipeline_config or {}).get("local_layout") or {}
+        ),
+    }
     checkpoint_context = nullcontext(None)
     if checkpoint_path is not None:
         from grading_graph.checkpoint import open_sqlite_checkpointer
 
         checkpoint_context = open_sqlite_checkpointer(checkpoint_path)
     with checkpoint_context as checkpointer:
-        app = build_grading_graph(
+        app = build_image_grading_graph(
             limited_provider,
             checkpointer=checkpointer,
             cache=cache,
             budget_ledger=ledger,
+            execution_settings=settings,
+            local_layout_backend=local_layout_backend,
+            question_label_reader=question_label_reader,
         )
         config = {"configurable": {"thread_id": run_id}}
-        output = app.invoke(graph_input, config=config) if checkpointer is not None else app.invoke(graph_input)
+        output = app.invoke(launch_state, config=config) if checkpointer is not None else app.invoke(launch_state)
     candidate = CandidateResult.model_validate(output["candidate"])
     candidate = _recover_provider_questions(candidate, existing)
     store.save_candidate(candidate)
+    graph_input = graph_state_payload(output)
+    for transient_key in ("candidate", "question_results", "risk_question_ids", "budget_usage"):
+        graph_input.pop(transient_key, None)
     _persist_pipeline_artifacts(
         artifact_root=artifact_root,
         student_id=student_id,
@@ -389,6 +405,7 @@ def run_candidate_states(
     checkpoint_dir: Path | str,
     cache_dir: Path | str | None = None,
     max_students: int = 0,
+    pipeline_config: dict[str, Any] | None = None,
 ) -> CandidateBatchSummary:
     """Run prepared states sequentially with durable, candidate-only writes."""
     checkpoint_dir = Path(checkpoint_dir).resolve()
@@ -413,6 +430,7 @@ def run_candidate_states(
                 artifact_root=artifact_root,
                 checkpoint_path=checkpoint_dir / f"grading-{checkpoint_hash}.sqlite",
                 cache_dir=cache_dir,
+                pipeline_config=pipeline_config,
             )
             succeeded += 1
             if candidate_has_provider_error(candidate):

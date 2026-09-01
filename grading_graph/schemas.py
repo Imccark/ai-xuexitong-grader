@@ -306,25 +306,44 @@ class FinalResult(StrictModel):
 
 
 class GraphState(StrictModel):
+    """Canonical durable state shared by graph execution and checkpoints.
+
+    Parallel ``Send`` payloads are deliberately transient and are validated by
+    their destination nodes.  Every field persisted on the main student state
+    belongs here so adapters and migrations cannot silently drift away from
+    the LangGraph channel schema.
+    """
+
     schema_version: str = "1.0"
-    graph_version: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
-    assignment_id: str = Field(min_length=1)
-    student_id: str = Field(min_length=1)
-    answer_manifest: AnswerManifest | None = None
-    pages: list[PageArtifact] = Field(default_factory=list)
+    graph_version: str = "langgraph-v3-evidence-first"
+    preprocess_version: str = ""
+    run_id: str = "run-unknown"
+    assignment_id: str = "assignment-unknown"
+    student_id: str = "student-unknown"
+    # Historical 0.9 checkpoints and a few compatibility adapters contain a
+    # reduced manifest/page projection.  Individual consumers still validate
+    # full AnswerManifest/PageArtifact values before using them.
+    answer_manifest: AnswerManifest | dict[str, Any] | None = None
+    pages: list[PageArtifact | dict[str, Any]] = Field(default_factory=list)
     page_observations: list[dict[str, Any]] = Field(default_factory=list)
     local_layout: dict[str, Any] = Field(default_factory=dict)
     layout_audit: list[dict[str, Any]] = Field(default_factory=list)
     question_jobs: dict[str, QuestionJob] = Field(default_factory=dict)
+    transcriptions: dict[str, list[TranscriptionSpan | dict[str, Any]]] = Field(default_factory=dict)
+    answer_texts: dict[str, str] = Field(default_factory=dict)
+    evidence_registry: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    question_ids: list[str] = Field(default_factory=list)
     question_results: dict[str, QuestionResult] = Field(default_factory=dict)
+    risk_question_ids: list[str] = Field(default_factory=list)
     ambiguities: list[dict[str, Any]] = Field(default_factory=list)
     budget: Budget = Field(default_factory=Budget)
+    budget_usage: dict[str, int] = Field(default_factory=dict)
     retries: dict[str, int] = Field(default_factory=dict)
     errors: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[dict[str, Any]] = Field(default_factory=list)
-    audit: AuditInfo | None = None
+    audit: AuditInfo | dict[str, Any] | None = None
     final_projection: dict[str, Any] = Field(default_factory=dict)
+    candidate: CandidateResult | None = None
 
     @model_validator(mode="after")
     def reject_credentials_or_bytes(self) -> "GraphState":

@@ -32,7 +32,14 @@ def _rubric_field(item: Any, name: str, default: Any = None) -> Any:
 
 
 class TargetedVerifier:
-    def __init__(self, provider: GradingProvider, *, max_rounds: int = 2, backoff_base: float = 0.25) -> None:
+    def __init__(
+        self,
+        provider: GradingProvider,
+        *,
+        max_rounds: int = 2,
+        backoff_base: float = 0.25,
+        transient_status_codes: tuple[int, ...] = (408, 429, 500, 502, 503, 504),
+    ) -> None:
         self.provider = provider
         self.max_rounds = max(1, min(max_rounds, 2))
         # A second adversarial round is deliberately bounded to two attempts,
@@ -41,6 +48,7 @@ class TargetedVerifier:
         # transient, so malformed model JSON still fails fast and does not
         # consume extra wall-clock time.
         self.backoff_base = max(0.0, min(float(backoff_base), 5.0))
+        self.transient_status_codes = frozenset(int(value) for value in transient_status_codes)
 
     def verify(
         self,
@@ -394,19 +402,22 @@ class TargetedVerifier:
             }
         )
 
-    @staticmethod
-    def _is_retryable(exc: Exception) -> bool:
+    def _is_retryable(self, exc: Exception) -> bool:
         """Identify transient upstream failures without exposing exception text."""
         status_code = getattr(exc, "status_code", None)
         if isinstance(exc, (TimeoutError, ConnectionError)):
             return True
-        if isinstance(status_code, int) and (status_code == 408 or status_code == 429 or 500 <= status_code <= 599):
+        if isinstance(status_code, int) and status_code in self.transient_status_codes:
             return True
         # OpenAI-compatible clients do not expose a stable exception class
         # across versions; retain a narrow status-token fallback for wrapped
         # HTTP errors while avoiding retries for auth/schema failures.
         error_text = str(exc).lower()
-        return any(token in error_text for token in (" 408", " 429", " 500", " 502", " 503", " 504", "timeout", "timed out"))
+        return (
+            any(str(code) in error_text for code in self.transient_status_codes)
+            or "timeout" in error_text
+            or "timed out" in error_text
+        )
 
     @staticmethod
     def _coerce_verdict(raw: Any, fallback: QuestionVerdict | None = None) -> QuestionVerdict | None:

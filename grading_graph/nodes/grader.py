@@ -144,9 +144,23 @@ def _student_reference_formula_conflict(reason: str) -> bool:
 
 
 class QuestionGrader:
-    def __init__(self, provider: GradingProvider, *, max_retries: int = 1, backoff_base: float = 0.05, strict_evidence_gate: bool = True) -> None:
+    def __init__(
+        self,
+        provider: GradingProvider,
+        *,
+        max_retries: int = 1,
+        missing_rubric_retries: int | None = None,
+        transient_status_codes: tuple[int, ...] = (408, 429, 500, 502, 503, 504),
+        backoff_base: float = 0.05,
+        strict_evidence_gate: bool = True,
+    ) -> None:
         self.provider = provider
         self.max_retries = max(0, min(max_retries, 2))
+        self.missing_rubric_retries = max(
+            0,
+            min(self.max_retries if missing_rubric_retries is None else missing_rubric_retries, 2),
+        )
+        self.transient_status_codes = frozenset(int(value) for value in transient_status_codes)
         self.backoff_base = max(0.0, backoff_base)
         self.strict_evidence_gate = bool(strict_evidence_gate)
 
@@ -225,8 +239,8 @@ class QuestionGrader:
                 error_text = str(exc)
                 retryable = (
                     isinstance(exc, (TimeoutError, ConnectionError))
-                    or "429" in error_text
-                    or (isinstance(status_code, int) and 500 <= status_code <= 599)
+                    or (isinstance(status_code, int) and status_code in self.transient_status_codes)
+                    or any(str(code) in error_text for code in self.transient_status_codes)
                 )
                 if not retryable or attempt >= self.max_retries:
                     raise GradingProviderError(
@@ -286,10 +300,12 @@ class QuestionGrader:
             str(item.get("rubric_id") or "") for item in rubric_decisions
         }
         missing_rubric_ids = tuple(sorted(expected_rubric_ids - returned_rubric_ids))
-        if missing_rubric_ids and len(expected_rubric_ids) >= 2 and self.max_retries > 0:
+        if missing_rubric_ids and len(expected_rubric_ids) >= 2 and self.missing_rubric_retries > 0:
             return QuestionGrader(
                 self.provider,
-                max_retries=self.max_retries - 1,
+                max_retries=self.max_retries,
+                missing_rubric_retries=self.missing_rubric_retries - 1,
+                transient_status_codes=tuple(self.transient_status_codes),
                 backoff_base=self.backoff_base,
                 strict_evidence_gate=self.strict_evidence_gate,
             ).grade(

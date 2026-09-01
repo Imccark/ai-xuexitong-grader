@@ -6,6 +6,9 @@ from pathlib import Path
 from PIL import Image
 
 from grading_graph.adapters.batch import run_student_candidate_from_images
+from grading_graph.budget import BudgetLedger
+from grading_graph.checkpoint import open_sqlite_checkpointer
+from grading_graph.graph import build_image_grading_graph
 from grading_graph.nodes.image_quality import RECTIFICATION_VERSION
 from grading_graph.pipeline import _reassign_cross_page_continuations
 from grading_graph.schemas import AnswerManifest, AnswerSliceRef, Budget, EvidenceRef, QuestionJob
@@ -119,6 +122,68 @@ def test_full_candidate_pipeline_prepares_pages_and_preserves_formal_result(work
     )
     assert str((student_artifact / "pages" / "page_1" / "normalized.png").resolve()) in provider.image_refs
     assert any("x=1" in prompt for prompt in provider.calls)
+
+
+def test_image_preparation_is_checkpointed_before_grading_and_resumes_without_repeating_calls(workspace_tmp_path) -> None:
+    processed_student_dir = workspace_tmp_path / "processed_images" / "student-resume"
+    processed_student_dir.mkdir(parents=True)
+    _write_png(processed_student_dir / "page_1.png")
+    manifest_dir = workspace_tmp_path / "manifest-resume"
+    slice_dir = manifest_dir / "reference_slices"
+    slice_dir.mkdir(parents=True)
+    (slice_dir / "answer.tex").write_text("x=1", encoding="utf-8")
+    manifest_path = manifest_dir / "manifest.json"
+    atomic_write_json(
+        manifest_path,
+        AnswerManifest(
+            assignment_id="第一周",
+            answer_hash="a" * 64,
+            compiler_version="test",
+            questions={
+                "1.1.1": AnswerSliceRef(
+                    question_id="1.1.1",
+                    artifact_ref="reference_slices/answer.tex",
+                    sha256="b" * 64,
+                    character_count=3,
+                )
+            },
+        ).model_dump(mode="json"),
+    )
+    budget = Budget(max_calls=5, max_input_tokens=20000, max_output_tokens=2000)
+    launch = {
+        "schema_version": "1.0",
+        "graph_version": "test",
+        "run_id": "image-parent-resume",
+        "assignment_id": "第一周",
+        "student_id": "student-resume",
+        "budget": budget.model_dump(mode="json"),
+        "processed_student_dir": str(processed_student_dir),
+        "answer_manifest_path": str(manifest_path),
+        "artifact_root": str(workspace_tmp_path / "第一周"),
+        "local_layout_config": {"enabled": False},
+    }
+    provider = FullPipelineProvider()
+    checkpoint_path = workspace_tmp_path / "image-parent.sqlite"
+    config = {"configurable": {"thread_id": "image-parent-resume"}}
+
+    with open_sqlite_checkpointer(checkpoint_path) as checkpointer:
+        first_ledger = BudgetLedger(budget.model_dump(mode="json"))
+        app = build_image_grading_graph(provider, checkpointer=checkpointer, budget_ledger=first_ledger)
+        stream = app.stream(launch, config=config)
+        first_event = next(stream)
+        assert "prepare_image_input" in first_event
+        stream.close()
+    preparation_call_count = len(provider.calls)
+    assert preparation_call_count == 2
+
+    with open_sqlite_checkpointer(checkpoint_path) as checkpointer:
+        resumed_ledger = BudgetLedger(budget.model_dump(mode="json"))
+        app = build_image_grading_graph(provider, checkpointer=checkpointer, budget_ledger=resumed_ledger)
+        output = app.invoke(None, config=config)
+
+    assert output["candidate"]["overall"] == "all_correct"
+    assert len(provider.calls) == preparation_call_count + 1
+    assert output["candidate"]["budget_usage"]["calls"] == 3
 
 
 def test_page_observer_can_correct_residual_orientation_once(workspace_tmp_path, monkeypatch) -> None:

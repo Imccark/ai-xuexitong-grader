@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import operator
 import re
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
@@ -20,7 +20,41 @@ from grading_graph.nodes.question_locator import QuestionLocator
 from grading_graph.nodes.rubric_compiler import compile_atomic_rubrics, deterministic_rubric_verdict
 from grading_graph.nodes.symbol_auditor import SymbolAuditor
 from grading_graph.nodes.verifier import TargetedVerifier
-from grading_graph.schemas import EvidenceRef, PageArtifact, QuestionJob, QuestionResult, QuestionVerdict, RiskLevel, StudentStatus
+from grading_graph.schemas import Budget, EvidenceRef, PageArtifact, QuestionJob, QuestionResult, QuestionVerdict, RiskLevel, StudentStatus
+from grading_graph.state import (
+    CURRENT_GRAPH_SCHEMA_VERSION,
+    GradingGraphState,
+    ImageGradingGraphState,
+    graph_state_payload,
+    migrate_graph_state,
+)
+
+
+@dataclass(frozen=True)
+class GraphExecutionSettings:
+    """Runtime controls that are actually consumed by graph nodes."""
+
+    provider_max_attempts: int = 3
+    missing_rubric_retry_max: int = 2
+    verification_max_rounds: int = 2
+    max_provider_concurrency: int = 2
+    transient_status_codes: tuple[int, ...] = (408, 429, 500, 502, 503, 504)
+
+    @classmethod
+    def from_pipeline_config(cls, config: dict[str, Any] | None) -> "GraphExecutionSettings":
+        value = dict(config or {})
+        retry = dict(value.get("retry") or {})
+        loop = dict(value.get("agent_loop") or {})
+        provider = dict(value.get("provider") or {})
+        return cls(
+            provider_max_attempts=max(1, min(int(retry.get("max_attempts", 3)), 3)),
+            missing_rubric_retry_max=max(0, min(int(loop.get("missing_rubric_retry_max", 2)), 2)),
+            verification_max_rounds=max(1, min(int(loop.get("max_verification_rounds", 2)), 2)),
+            max_provider_concurrency=max(1, int(provider.get("max_concurrency", 2))),
+            transient_status_codes=tuple(
+                int(code) for code in retry.get("transient_status_codes", (408, 429, 500, 502, 503, 504))
+            ),
+        )
 
 
 class _ConcurrencyLimitedProvider:
@@ -39,12 +73,6 @@ class _ConcurrencyLimitedProvider:
     def complete_json(self, prompt: str, schema: dict[str, Any], image_ref: str | None = None) -> dict[str, Any]:
         with self._semaphore:
             return self.provider.complete_json(prompt, schema, image_ref=image_ref)
-
-
-def _merge_dicts(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
-    merged = dict(left or {})
-    merged.update(right or {})
-    return merged
 
 
 def _safe_error(stage: str, question_id: str, exc: Exception) -> dict[str, str]:
@@ -188,65 +216,6 @@ def _symbol_audit_image_refs(span: Any, job: QuestionJob) -> str | list[str] | N
         return str(source)
 
 
-class GradingGraphState(TypedDict, total=False):
-    schema_version: str
-    graph_version: str
-    run_id: str
-    assignment_id: str
-    student_id: str
-    answer_manifest: dict[str, Any]
-    pages: list[dict[str, Any]]
-    page_observations: list[dict[str, Any]]
-    local_layout: dict[str, Any]
-    layout_audit: list[dict[str, Any]]
-    question_jobs: dict[str, QuestionJob | dict[str, Any]]
-    transcriptions: dict[str, list[dict[str, Any]]]
-    answer_texts: dict[str, str]
-    evidence_registry: dict[str, dict[str, Any]]
-    question_ids: list[str]
-    question_results: Annotated[dict[str, dict[str, Any]], _merge_dicts]
-    ambiguities: list[dict[str, Any]]
-    errors: Annotated[list[dict[str, Any]], operator.add]
-    warnings: list[dict[str, Any]]
-    budget: dict[str, Any]
-    budget_usage: dict[str, int]
-    retries: dict[str, int]
-    audit: dict[str, Any]
-    final_projection: dict[str, Any]
-    risk_question_ids: list[str]
-    candidate: dict[str, Any]
-
-
-CURRENT_GRAPH_SCHEMA_VERSION = "1.0"
-
-
-def migrate_graph_state(state: dict[str, Any] | None) -> dict[str, Any]:
-    """Normalize durable state before any node reads it.
-
-    Version 0.9 was the pre-manifest state shape.  Its fields are compatible
-    with the current graph, so migration is additive and idempotent.  Future
-    versions fail closed instead of being silently interpreted as older data.
-    """
-    normalized = dict(state or {})
-    raw_version = normalized.get("schema_version", "0.9")
-    version = str(raw_version)
-    if version not in {"0.9", CURRENT_GRAPH_SCHEMA_VERSION}:
-        raise ValueError(f"unsupported graph state schema version: {version}")
-    normalized["schema_version"] = CURRENT_GRAPH_SCHEMA_VERSION
-    for key, default in (
-        ("question_results", {}),
-        ("ambiguities", []),
-        ("errors", []),
-        ("retries", {}),
-        ("evidence_registry", {}),
-        ("local_layout", {}),
-        ("layout_audit", []),
-        ("warnings", []),
-    ):
-        normalized.setdefault(key, default)
-    return normalized
-
-
 def build_grading_graph(
     provider: GradingProvider,
     *,
@@ -254,17 +223,21 @@ def build_grading_graph(
     cache: JsonResponseCache | None = None,
     cache_dir: Any = None,
     budget_ledger: BudgetLedger | None = None,
-    max_retries: int = 2,
-    max_provider_concurrency: int = 2,
+    max_retries: int | None = None,
+    max_provider_concurrency: int | None = None,
+    execution_settings: GraphExecutionSettings | None = None,
 ):
     if cache is not None and cache_dir is not None:
         raise ValueError("pass either cache or cache_dir, not both")
     response_cache = cache or (JsonResponseCache(cache_dir) if cache_dir is not None else None)
+    settings = execution_settings or GraphExecutionSettings()
+    provider_retries = settings.provider_max_attempts - 1 if max_retries is None else max_retries
+    provider_concurrency = settings.max_provider_concurrency if max_provider_concurrency is None else max_provider_concurrency
     # Keep fan-out parallelism in LangGraph while serializing the expensive
     # upstream calls to a small bounded pool.  This prevents transient 429/5xx
     # bursts from turning otherwise clear transcriptions into unreadable
     # results, without changing the graph's evidence gates.
-    limited_provider = _ConcurrencyLimitedProvider(provider, max_provider_concurrency)
+    limited_provider = _ConcurrencyLimitedProvider(provider, provider_concurrency)
     ledgers: dict[str, BudgetLedger] = {}
 
     def get_ledger(state: dict[str, Any]) -> BudgetLedger:
@@ -510,7 +483,9 @@ def build_grading_graph(
             )
             result = QuestionGrader(
                 question_provider,
-                max_retries=max_retries,
+                max_retries=provider_retries,
+                missing_rubric_retries=settings.missing_rubric_retry_max,
+                transient_status_codes=settings.transient_status_codes,
                 backoff_base=0.25,
                 strict_evidence_gate=False,
             ).grade(
@@ -694,7 +669,11 @@ def build_grading_graph(
                         rescued_paths.append(path)
                 if rescued_paths:
                     image_ref = rescued_paths[0] if len(rescued_paths) == 1 else rescued_paths[:2]
-            updated = TargetedVerifier(_budgeted_provider(get_ledger(state))).verify(
+            updated = TargetedVerifier(
+                _budgeted_provider(get_ledger(state)),
+                max_rounds=settings.verification_max_rounds,
+                transient_status_codes=settings.transient_status_codes,
+            ).verify(
                 current,
                 job=job,
                 transcription=state.get("transcription", []),
@@ -764,4 +743,82 @@ def build_grading_graph(
     builder.add_conditional_edges("aggregate", dispatch_verification)
     builder.add_edge("verify_question", "finalize")
     builder.add_edge("finalize", END)
+    return builder.compile(checkpointer=checkpointer)
+
+
+def build_image_grading_graph(
+    provider: GradingProvider,
+    *,
+    checkpointer: Any = None,
+    cache: JsonResponseCache | None = None,
+    budget_ledger: BudgetLedger,
+    execution_settings: GraphExecutionSettings | None = None,
+    local_layout_backend: Any = None,
+    question_label_reader: Any = None,
+):
+    """Build the checkpointed end-to-end graph from processed pages to result.
+
+    Image materialization, layout observation, routing and transcription now
+    execute inside ``prepare_image_input``.  Its complete output and budget
+    counters are checkpointed before the grading subgraph starts, so a resumed
+    process does not repeat paid preparation calls.
+    """
+
+    settings = execution_settings or GraphExecutionSettings()
+    grading_app = build_grading_graph(
+        provider,
+        cache=cache,
+        budget_ledger=budget_ledger,
+        execution_settings=settings,
+    )
+
+    def prepare_image_input(state: ImageGradingGraphState) -> dict[str, Any]:
+        from grading_graph.pipeline import build_student_graph_input
+
+        prepared = build_student_graph_input(
+            processed_student_dir=state["processed_student_dir"],
+            answer_manifest_path=state["answer_manifest_path"],
+            artifact_root=state["artifact_root"],
+            provider=provider,
+            assignment_id=str(state["assignment_id"]),
+            student_id=str(state["student_id"]),
+            run_id=str(state["run_id"]),
+            budget=Budget.model_validate(state["budget"]),
+            cache=cache,
+            budget_ledger=budget_ledger,
+            local_layout_config=dict(state.get("local_layout_config") or {}),
+            local_layout_backend=local_layout_backend,
+            question_label_reader=question_label_reader,
+        )
+        snapshot = budget_ledger.snapshot
+        prepared["budget_usage"] = {
+            "calls": snapshot.calls,
+            "input_tokens": snapshot.input_tokens,
+            "output_tokens": snapshot.output_tokens,
+        }
+        # One canonical validation point before durable state reaches SQLite.
+        return graph_state_payload(prepared)
+
+    def grade_prepared(state: ImageGradingGraphState) -> dict[str, Any]:
+        budget_ledger.restore(state.get("budget_usage"))
+        durable = graph_state_payload(state)
+        before_errors = list(durable.get("errors", []))
+        output = grading_app.invoke(durable)
+        after_errors = list(output.get("errors", []))
+        return {
+            "question_results": output.get("question_results", {}),
+            "risk_question_ids": output.get("risk_question_ids", []),
+            "budget_usage": output.get("budget_usage", {}),
+            "candidate": output["candidate"],
+            # ``errors`` is an additive channel in the parent graph. Return
+            # only errors introduced by the grading subgraph.
+            "errors": after_errors[len(before_errors):],
+        }
+
+    builder = StateGraph(ImageGradingGraphState)
+    builder.add_node("prepare_image_input", prepare_image_input)
+    builder.add_node("grade_prepared", grade_prepared)
+    builder.add_edge(START, "prepare_image_input")
+    builder.add_edge("prepare_image_input", "grade_prepared")
+    builder.add_edge("grade_prepared", END)
     return builder.compile(checkpointer=checkpointer)

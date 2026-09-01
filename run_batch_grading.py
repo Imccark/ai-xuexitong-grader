@@ -360,6 +360,7 @@ def run_candidate_engine(args: argparse.Namespace, runtime_config) -> int:
             checkpoint_dir=checkpoint_dir,
             cache_dir=cache_dir,
             max_students=args.max_students,
+            pipeline_config=pipeline_config,
         )
         print(json.dumps(summary.__dict__, ensure_ascii=False))
         return 1 if summary.failed or summary.stop_reason else 0
@@ -407,6 +408,7 @@ def run_candidate_engine(args: argparse.Namespace, runtime_config) -> int:
                 checkpoint_path=checkpoint_dir / "grading-images.sqlite",
                 cache_dir=cache_dir,
                 local_layout_config=dict(pipeline_config.get("local_layout") or {}),
+                pipeline_config=pipeline_config,
             )
             succeeded += 1
             if candidate_has_provider_error(candidate):
