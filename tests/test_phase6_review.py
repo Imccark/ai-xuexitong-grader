@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from grading_graph.review import ReviewConflict, ReviewGateError, ReviewStore
-from grading_graph.schemas import CandidateResult, EvidenceRef, OverallLabel, QuestionResult, StudentStatus, TeacherDecision
+from app.grading_graph.review import ReviewConflict, ReviewGateError, ReviewStore
+from app.grading_graph.schemas import CandidateResult, EvidenceRef, OverallLabel, QuestionResult, StudentStatus, TeacherDecision
 
 
 def _candidate() -> CandidateResult:

@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from grading_graph.adapters.batch import run_candidate_states
-from grading_graph.provider import DASHSCOPE_API_KEY_ENV, DashScopeOpenAIProvider
+from app.grading_graph.adapters.batch import run_candidate_states
+from app.grading_graph.provider import DASHSCOPE_API_KEY_ENV, DashScopeOpenAIProvider
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,7 +97,7 @@ def main() -> int:
     checkpoint_dir = Path(args.checkpoint_dir).resolve() if args.checkpoint_dir else artifact_root / "agent_artifacts" / "_checkpoints"
     cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else None
     pipeline_config = json.loads(
-        (Path(__file__).resolve().parents[2] / "configs" / "agent_pipeline.json").read_text(encoding="utf-8")
+        (Path(__file__).resolve().parents[2] / "app" / "configs" / "agent_pipeline.json").read_text(encoding="utf-8")
     )
 
     summary = run_candidate_states(

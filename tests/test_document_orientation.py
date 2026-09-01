@@ -5,8 +5,8 @@ import io
 import numpy as np
 from PIL import Image, ImageDraw
 
-from grading_graph.nodes import image_quality
-from grading_graph.nodes.orientation import clockwise_rotation_matrix, rotate_clockwise
+from app.grading_graph.nodes import image_quality
+from app.grading_graph.nodes.orientation import clockwise_rotation_matrix, rotate_clockwise
 
 
 def test_clockwise_rotation_matrices_round_trip_pixel_corners() -> None:

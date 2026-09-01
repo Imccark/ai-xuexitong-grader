@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from grading_graph.preprocessing import dry_run_processed_image_quality, dry_run_raw_submissions
-from run_preprocessing import build_candidates_from_raw, preprocess_one_student
+from app.grading_graph.preprocessing import dry_run_processed_image_quality, dry_run_raw_submissions
+from app.run_preprocessing import build_candidates_from_raw, preprocess_one_student
 
 
 def _png_bytes() -> bytes:

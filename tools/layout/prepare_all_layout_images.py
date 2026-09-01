@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from evaluation.layout_teacher import build_pilot_manifest, write_jsonl
+from tools.evaluation.core.layout_teacher import build_pilot_manifest, write_jsonl
 from tools.layout.prepare_rectified_labeling_images import prepare_rectified_dataset
 
 

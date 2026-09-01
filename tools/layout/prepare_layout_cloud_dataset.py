@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from PIL import Image
 
-from evaluation.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION, QUALITY_VERSION, validate_layout
+from tools.evaluation.core.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION, QUALITY_VERSION, validate_layout
 
 
 ROOT = Path(__file__).resolve().parents[2]

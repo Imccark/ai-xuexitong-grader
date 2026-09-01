@@ -4,9 +4,9 @@ import json
 import hashlib
 from types import SimpleNamespace
 
-from grading_graph.schemas import CandidateResult
-from grading_graph.shadow import run_shadow
-from run_batch_grading import apply_candidate_budget_overrides
+from app.grading_graph.schemas import CandidateResult
+from app.grading_graph.shadow import run_shadow
+from app.run_batch_grading import apply_candidate_budget_overrides
 
 
 def test_shadow_report_is_candidate_only_and_preserves_legacy_hashes(workspace_tmp_path) -> None:

@@ -6,7 +6,7 @@ import re
 import shutil
 from pathlib import Path
 
-from evaluation.layout_teacher import (
+from tools.evaluation.core.layout_teacher import (
     QUALITY_VERSION,
     OnlineBudget,
     RelayLayoutTeacher,
@@ -20,7 +20,7 @@ from tools.layout.prepare_rectified_labeling_images import prepare_rectified_dat
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG = ROOT / "configs" / "teacher_labeling.json"
+DEFAULT_CONFIG = ROOT / "app" / "configs" / "teacher_labeling.json"
 DEFAULT_SOURCE_PRIVATE_MANIFEST = ROOT / "runtime_logs" / "teacher_labeling" / "pilot_private.jsonl"
 DEFAULT_PRIVATE_MANIFEST = ROOT / "runtime_logs" / "teacher_labeling" / "pilot_rectified_v4_private.jsonl"
 DEFAULT_PUBLIC_MANIFEST = ROOT / "evaluation" / "layout_labels" / "manifest.jsonl"
@@ -109,13 +109,13 @@ def seed_existing_results(
 
 
 def config_labeling_version() -> str:
-    from evaluation.layout_teacher import LABELING_VERSION
+    from tools.evaluation.core.layout_teacher import LABELING_VERSION
 
     return LABELING_VERSION
 
 
 def config_consensus_version() -> str:
-    from evaluation.layout_teacher import CONSENSUS_VERSION
+    from tools.evaluation.core.layout_teacher import CONSENSUS_VERSION
 
     return CONSENSUS_VERSION
 

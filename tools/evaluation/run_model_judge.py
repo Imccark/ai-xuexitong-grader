@@ -7,12 +7,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from evaluation.model_judge import MultimodalModelJudge, candidate_snapshot_hash
-from grading_graph.budget import BudgetLedger, BudgetedJsonProvider
-from grading_graph.cache import CachedJsonProvider, JsonResponseCache
-from grading_graph.provider import OpenAIResponsesProvider
-from grading_graph.store import atomic_write_bytes
-from project_config import read_local_env
+from tools.evaluation.core.model_judge import MultimodalModelJudge, candidate_snapshot_hash
+from app.grading_graph.budget import BudgetLedger, BudgetedJsonProvider
+from app.grading_graph.cache import CachedJsonProvider, JsonResponseCache
+from app.grading_graph.provider import OpenAIResponsesProvider
+from app.grading_graph.store import atomic_write_bytes
+from app.project_config import read_local_env
 
 
 def parse_args() -> argparse.Namespace:

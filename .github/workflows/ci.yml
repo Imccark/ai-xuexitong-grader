@@ -26,7 +26,7 @@ jobs:
           python-version: "3.13"
 
       - name: Check public release contents
-        run: python scripts/check_public_release.py
+        run: python -m tools.release.check_public_release
 
       - name: Install Python dependencies
         run: uv sync --frozen --extra orientation --group dev

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from tools.layout.derive_layout_orientation_overrides import derive_orientation_overrides
-from evaluation.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION
+from tools.evaluation.core.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION
 
 
 def _result(page_id: str, image_sha: str, rotations: tuple[int, int, int]) -> dict:

@@ -8,17 +8,17 @@ import time
 from pathlib import Path
 from typing import Any
 
-from grading_graph.nodes.local_layout import (
+from app.grading_graph.nodes.local_layout import (
     LocalLayoutObserver,
     LocalLayoutSettings,
     LocalLayoutUnavailable,
 )
-from grading_graph.schemas import AnswerManifest
-from grading_graph.store import atomic_write_json
+from app.grading_graph.schemas import AnswerManifest
+from app.grading_graph.store import atomic_write_json
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG = ROOT / "configs" / "agent_pipeline.json"
+DEFAULT_CONFIG = ROOT / "app" / "configs" / "agent_pipeline.json"
 
 
 def parser() -> argparse.ArgumentParser:

@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from evaluation.codex_judge_packets import prepare_packets
+from tools.evaluation.core.codex_judge_packets import prepare_packets
 
 
 def parse_args() -> argparse.Namespace:

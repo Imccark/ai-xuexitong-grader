@@ -4,8 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
-from grading_graph.reference_compiler import REFERENCE_COMPILER_VERSION, compile_reference_answer
-from grading_graph.store import atomic_write_json
+from app.grading_graph.reference_compiler import REFERENCE_COMPILER_VERSION, compile_reference_answer
+from app.grading_graph.store import atomic_write_json
 
 
 def parse_args() -> argparse.Namespace:

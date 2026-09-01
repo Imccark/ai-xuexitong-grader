@@ -4,7 +4,7 @@ import json
 
 from PIL import Image
 
-from evaluation.codex_judge_packets import (
+from tools.evaluation.core.codex_judge_packets import (
     _normalise_question_id,
     _question_id_matches,
     prepare_packets,

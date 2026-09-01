@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from evaluation.layout_teacher import (
+from tools.evaluation.core.layout_teacher import (
     CONSENSUS_VERSION,
     LABELING_VERSION,
     QUALITY_VERSION,
@@ -37,7 +37,7 @@ from evaluation.layout_teacher import (
     validate_layout,
 )
 from tools.layout.run_teacher_labeling import migrate_quality_metadata, pending_manifest_rows
-from evaluation.reconcile_layout_labels import reconcile_result
+from tools.evaluation.core.reconcile_layout_labels import reconcile_result
 
 
 def _layout(bbox=None):
@@ -152,8 +152,8 @@ def test_teacher_prefers_project_local_key_over_stale_process_key(monkeypatch) -
         return SimpleNamespace()
 
     monkeypatch.setenv("SOL_ANNOTATION_API_KEY", "stale-process-key")
-    monkeypatch.setattr("evaluation.layout_teacher.get_local_env_var", lambda _name: "project-local-key")
-    monkeypatch.setattr("evaluation.layout_teacher._dead_loopback_proxy_sentinel", lambda: False)
+    monkeypatch.setattr("tools.evaluation.core.layout_teacher.get_local_env_var", lambda _name: "project-local-key")
+    monkeypatch.setattr("tools.evaluation.core.layout_teacher._dead_loopback_proxy_sentinel", lambda: False)
     monkeypatch.setattr("openai.OpenAI", fake_openai)
 
     teacher = RelayLayoutTeacher.from_config(
@@ -613,7 +613,7 @@ def test_maximum_weight_matching_avoids_order_greedy_pairing(monkeypatch) -> Non
         (tuple(left[1]["bbox"]), tuple(right[1]["bbox"])): 0.10,
     }
     monkeypatch.setattr(
-        "evaluation.layout_teacher.bbox_iou",
+        "tools.evaluation.core.layout_teacher.bbox_iou",
         lambda first, second: weights[(tuple(first), tuple(second))],
     )
     assert _maximum_weight_pairs(left, right) == {0: (1, 0.70), 1: (0, 0.75)}

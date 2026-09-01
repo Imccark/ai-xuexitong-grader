@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from grading_graph.nodes.page_router import build_question_jobs
-from grading_graph.nodes.page_observer import PageObserver
-from grading_graph.nodes.transcriber import LiteralTranscriber, TranscriptionProviderError
-from grading_graph.pipeline import _expand_ambiguous_shared_routes, _question_for_span
-from grading_graph.schemas import AnswerManifest, AnswerSliceRef, FileRef, PageArtifact, TranscriptionSpan
+from app.grading_graph.nodes.page_router import build_question_jobs
+from app.grading_graph.nodes.page_observer import PageObserver
+from app.grading_graph.nodes.transcriber import LiteralTranscriber, TranscriptionProviderError
+from app.grading_graph.pipeline import _expand_ambiguous_shared_routes, _question_for_span
+from app.grading_graph.schemas import AnswerManifest, AnswerSliceRef, FileRef, PageArtifact, TranscriptionSpan
 
 
 def _manifest() -> AnswerManifest:

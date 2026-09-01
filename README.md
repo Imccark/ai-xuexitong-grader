@@ -31,7 +31,7 @@ uv sync --extra orientation --no-dev
 启动本地控制台：
 
 ```powershell
-uv run python review_app.py --port 8765
+uv run python -m app.review_app --port 8765
 ```
 
 浏览器打开：
@@ -133,7 +133,7 @@ uv sync --extra orientation --no-dev
 ### 第二步：启动控制台
 
 ```powershell
-uv run python review_app.py --port 8765
+uv run python -m app.review_app --port 8765
 ```
 
 打开 `http://127.0.0.1:8765`。
@@ -147,7 +147,7 @@ uv run python review_app.py --port 8765
 也可以复制示例文件：
 
 ```powershell
-Copy-Item -LiteralPath "configs/env/local.env.example" -Destination "configs/env/local.env"
+Copy-Item -LiteralPath "app/configs/env/local.env.example" -Destination "app/configs/env/local.env"
 ```
 
 然后编辑：
@@ -156,14 +156,14 @@ Copy-Item -LiteralPath "configs/env/local.env.example" -Destination "configs/env
 DASHSCOPE_API_KEY=
 ```
 
-`configs/env/local.env` 只保存在本机，不要发送给他人，也不要提交到 GitHub。
+`app/configs/env/local.env` 只保存在本机，不要发送给他人，也不要提交到 GitHub。
 
 ### 第四步：创建作业周
 
 在控制台输入作业周名称并点击创建，或者运行：
 
 ```powershell
-uv run python create_week.py "新作业周"
+uv run python -m app.create_week "新作业周"
 ```
 
 创建后会得到：
@@ -183,8 +183,8 @@ uv run python create_week.py "新作业周"
 控制台点击“运行预处理”，或者运行：
 
 ```powershell
-uv run python run_preprocessing.py `
-  --assignment "configs/assignments/新作业周.json" `
+uv run python -m app.run_preprocessing `
+  --assignment "app/configs/assignments/新作业周.json" `
   --max-workers 4
 ```
 
@@ -206,8 +206,8 @@ uv run python run_preprocessing.py `
 命令行方式：
 
 ```powershell
-uv run python run_batch_grading.py `
-  --assignment "configs/assignments/新作业周.json" `
+uv run python -m app.run_batch_grading `
+  --assignment "app/configs/assignments/新作业周.json" `
   --engine candidate `
   --online `
   --max-students 10 `
@@ -238,45 +238,40 @@ uv run python run_batch_grading.py `
 ### 创建作业周
 
 ```powershell
-uv run python create_week.py "新作业周"
+uv run python -m app.create_week "新作业周"
 ```
 
 ### 预处理
 
 ```powershell
-uv run python run_preprocessing.py --assignment "configs/assignments/新作业周.json" --max-workers 4
+uv run python -m app.run_preprocessing --assignment "app/configs/assignments/新作业周.json" --max-workers 4
 ```
 
 ### 批量批改
 
 ```powershell
-uv run python run_batch_grading.py --assignment "configs/assignments/新作业周.json" --engine candidate --online --max-students 10 --max-calls 60 --max-input-tokens 250000 --max-output-tokens 50000
+uv run python -m app.run_batch_grading --assignment "app/configs/assignments/新作业周.json" --engine candidate --online --max-students 10 --max-calls 60 --max-input-tokens 250000 --max-output-tokens 50000
 ```
 
 ### 启动结果页面
 
 ```powershell
-uv run python review_app.py --assignment "configs/assignments/新作业周.json" --port 8765
+uv run python -m app.review_app --assignment "app/configs/assignments/新作业周.json" --port 8765
 ```
 
 ## 目录结构示例
 
 ```text
 ai-xuexitong-grader/
-├── configs/
-│   ├── agent_pipeline.json
-│   ├── subjects.json
-│   ├── assignments/
-│   └── env/
-├── grading_graph/
-├── models/
-├── prompts/
-├── review_ui/
-├── tools/                  布局、评测和高级批改工具
-├── create_week.py
-├── run_preprocessing.py
-├── run_batch_grading.py
-└── review_app.py
+├── app/                    主程序、配置和网页界面
+│   ├── configs/
+│   ├── grading_graph/
+│   ├── models/
+│   ├── prompts/
+│   └── review_ui/
+├── docs/                   使用和迁移说明
+├── tests/                  自动测试
+└── tools/                  布局、评测和维护工具
 ```
 
 每个作业周的数据单独保存在对应目录中：
@@ -296,7 +291,7 @@ ai-xuexitong-grader/
 
 ### 找不到 API Key
 
-确认控制台中配置的环境变量名称与 `configs/subjects.json` 中的 `api_key_env` 一致。默认使用 `DASHSCOPE_API_KEY`。
+确认控制台中配置的环境变量名称与 `app/configs/subjects.json` 中的 `api_key_env` 一致。默认使用 `DASHSCOPE_API_KEY`。
 
 ### 预处理后图片方向不正确
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grading_graph.reference_compiler import (
+from app.grading_graph.reference_compiler import (
     compile_reference_answer,
     match_observed_questions,
     parse_question_blocks,

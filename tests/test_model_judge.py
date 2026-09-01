@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from evaluation.metrics import evaluate_candidates
-from evaluation.model_judge import MultimodalModelJudge, candidate_snapshot_hash
-from evaluation.validate_model_judgments import validate_model_judgments
-from grading_graph.provider import OpenAIResponsesProvider
+from tools.evaluation.core.metrics import evaluate_candidates
+from tools.evaluation.core.model_judge import MultimodalModelJudge, candidate_snapshot_hash
+from tools.evaluation.core.validate_model_judgments import validate_model_judgments
+from app.grading_graph.provider import OpenAIResponsesProvider
 
 
 class SequenceProvider:

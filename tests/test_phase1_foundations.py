@@ -8,13 +8,13 @@ from typing import TypedDict
 import pytest
 from langgraph.graph import END, START, StateGraph
 
-from grading_graph.adapters.legacy_result import (
+from app.grading_graph.adapters.legacy_result import (
     candidate_to_legacy_projection,
     legacy_json_to_candidate,
     legacy_text_to_candidate,
 )
-from grading_graph.checkpoint import open_sqlite_checkpointer
-from grading_graph.schemas import (
+from app.grading_graph.checkpoint import open_sqlite_checkpointer
+from app.grading_graph.schemas import (
     CandidateResult,
     EvidenceRef,
     FinalResult,
@@ -25,7 +25,7 @@ from grading_graph.schemas import (
     StudentStatus,
     TeacherDecision,
 )
-from grading_graph.store import ArtifactStore, canonical_hash
+from app.grading_graph.store import ArtifactStore, canonical_hash
 
 
 def test_structured_candidate_round_trip_and_evidence_gate() -> None:
@@ -220,7 +220,7 @@ def test_agent_candidate_projection_builds_deterministic_read_only_feedback() ->
 
 
 def test_all_600_historical_result_pairs_migrate_without_writes() -> None:
-    from project_config import load_runtime_config
+    from app.project_config import load_runtime_config
 
     result_paths = sorted(Path.cwd().glob("第*周/results/*.txt"))
     assert len(result_paths) == 600
@@ -243,7 +243,7 @@ def test_all_600_historical_result_pairs_migrate_without_writes() -> None:
 
 
 def test_week_shorthand_prefers_matching_assignment_manifest() -> None:
-    from project_config import load_runtime_config
+    from app.project_config import load_runtime_config
 
     config = load_runtime_config(week="第一周")
     assert config.assignment_id == "第一周"

@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from grading_graph.provider import (
+from app.grading_graph.provider import (
     DASHSCOPE_BASE_URL,
     DASHSCOPE_MODEL,
     DashScopeOpenAIProvider,
     _dead_loopback_proxy_sentinel,
 )
-from grading_graph.cache import CachedJsonProvider, JsonResponseCache
-from grading_graph.budget import BudgetLedger, BudgetedJsonProvider
+from app.grading_graph.cache import CachedJsonProvider, JsonResponseCache
+from app.grading_graph.budget import BudgetLedger, BudgetedJsonProvider
 
 
 class _FakeCompletions:

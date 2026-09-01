@@ -4,9 +4,9 @@ import argparse
 import json
 from pathlib import Path
 
-from grading_graph.schemas import CandidateResult
-from grading_graph.shadow import load_json_payload, run_shadow
-from project_config import load_runtime_config
+from app.grading_graph.schemas import CandidateResult
+from app.grading_graph.shadow import load_json_payload, run_shadow
+from app.project_config import load_runtime_config
 
 
 def parse_args() -> argparse.Namespace:

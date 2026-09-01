@@ -4,16 +4,16 @@ from pathlib import Path
 
 from PIL import Image
 
-from grading_graph.nodes.local_layout import (
+from app.grading_graph.nodes.local_layout import (
     LocalLayoutObserver,
     LocalLayoutSettings,
     normalize_question_label,
     question_label_candidates,
     resolve_question_label,
 )
-from grading_graph.pipeline import build_student_graph_input
-from grading_graph.schemas import AnswerManifest, AnswerSliceRef, Budget
-from grading_graph.store import atomic_write_json
+from app.grading_graph.pipeline import build_student_graph_input
+from app.grading_graph.schemas import AnswerManifest, AnswerSliceRef, Budget
+from app.grading_graph.store import atomic_write_json
 
 
 class FakeLayoutBackend:

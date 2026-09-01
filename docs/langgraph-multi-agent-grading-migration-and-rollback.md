@@ -4,7 +4,7 @@
 
 ## 不可破坏的边界
 
-- `configs/agent_pipeline.json` 的 `feature_flag` 和 `shadow.formal_result_source` 当前均为 `candidate`；回滚时必须同时改回 `legacy`。
+- `app/configs/agent_pipeline.json` 的 `feature_flag` 和 `shadow.formal_result_source` 当前均为 `candidate`；回滚时必须同时改回 `legacy`。
 - candidate、checkpoint 和 cache 分目录保存；Agent 运行不会覆盖现有 `results/`，前端与导出链路直接读取当前 `candidate_result.json`。
 - API key 只能从环境变量读取，不能写进命令行、Graph state、checkpoint、artifact、日志或报告。
 - 本地页面已删除人工 finalize/改判/Gold 标注入口；`auto_submit=false`，学习通远程提交仍需单独、明确授权。
@@ -17,7 +17,7 @@ git status --short
 uv lock --check
 uv run python -m pip check
 uv run pytest -q -m "not online"
-uv run python -m evaluation.validate_model_judgments `
+uv run python -m tools.evaluation.core.validate_model_judgments `
   --judgments evaluation/model_judgments.jsonl `
   --output evaluation/reports/model_judge_gate_report.json
 ```
@@ -32,20 +32,20 @@ uv run python -m evaluation.validate_model_judgments `
 
 ## 重新前处理的 staging 流程
 
-`run_preprocessing.py --reprocess` 会为每名学生先生成 staging 页面，逐页校验成功后才原子替换目标目录；旧目录先移动到 `preprocess_backups`。失败时旧目录保持不变。
+`app.run_preprocessing --reprocess` 会为每名学生先生成 staging 页面，逐页校验成功后才原子替换目标目录；旧目录先移动到 `preprocess_backups`。失败时旧目录保持不变。
 
 ```powershell
-python run_preprocessing.py --assignment configs/assignments/第二周.json --reprocess --max-workers 4
+uv run python -m app.run_preprocessing --assignment app/configs/assignments/第二周.json --reprocess --max-workers 4
 ```
 
 迁移后至少核对：提交数、成功/失败数、页数、旧结果 hash 和备份目录。不要直接覆盖 `results/` 或原始提交；发现页数、hash 或人工决策异常时立即停止。
 
 ## Agent 正式运行
 
-命令行运行仍必须显式允许在线调用，并同时给出学生数、调用数和输入/输出 token 上限；省略 `--online` 时程序拒绝调用。控制台按钮本身视为一次显式启动操作，会按当前学生目录数和 `configs/agent_pipeline.json` 的预算自动补齐这些参数。
+命令行运行仍必须显式允许在线调用，并同时给出学生数、调用数和输入/输出 token 上限；省略 `--online` 时程序拒绝调用。控制台按钮本身视为一次显式启动操作，会按当前学生目录数和 `app/configs/agent_pipeline.json` 的预算自动补齐这些参数。
 
 ```powershell
-python run_batch_grading.py --assignment configs/assignments/第二周.json `
+uv run python -m app.run_batch_grading --assignment app/configs/assignments/第二周.json `
   --engine candidate --online --max-students 10 --max-calls 20 `
   --max-input-tokens 50000 --max-output-tokens 10000
 ```

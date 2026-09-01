@@ -5,14 +5,14 @@ from pathlib import Path
 
 from PIL import Image
 
-from grading_graph.adapters.batch import run_student_candidate_from_images
-from grading_graph.budget import BudgetLedger
-from grading_graph.checkpoint import open_sqlite_checkpointer
-from grading_graph.graph import build_image_grading_graph
-from grading_graph.nodes.image_quality import RECTIFICATION_VERSION
-from grading_graph.pipeline import _reassign_cross_page_continuations
-from grading_graph.schemas import AnswerManifest, AnswerSliceRef, Budget, EvidenceRef, QuestionJob
-from grading_graph.store import atomic_write_json
+from app.grading_graph.adapters.batch import run_student_candidate_from_images
+from app.grading_graph.budget import BudgetLedger
+from app.grading_graph.checkpoint import open_sqlite_checkpointer
+from app.grading_graph.graph import build_image_grading_graph
+from app.grading_graph.nodes.image_quality import RECTIFICATION_VERSION
+from app.grading_graph.pipeline import _reassign_cross_page_continuations
+from app.grading_graph.schemas import AnswerManifest, AnswerSliceRef, Budget, EvidenceRef, QuestionJob
+from app.grading_graph.store import atomic_write_json
 
 
 class FullPipelineProvider:
@@ -187,7 +187,7 @@ def test_image_preparation_is_checkpointed_before_grading_and_resumes_without_re
 
 
 def test_page_observer_can_correct_residual_orientation_once(workspace_tmp_path, monkeypatch) -> None:
-    from grading_graph.nodes import image_quality
+    from app.grading_graph.nodes import image_quality
 
     processed = workspace_tmp_path / "processed_images" / "student-rotation"
     processed.mkdir(parents=True)

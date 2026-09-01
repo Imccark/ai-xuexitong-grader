@@ -14,10 +14,10 @@ from typing import Any
 
 import httpx
 
-from project_config import REPO_ROOT, load_json, resolve_api_key
+from app.project_config import REPO_ROOT, load_json, resolve_api_key
 
 
-DEFAULT_CONFIG = REPO_ROOT / "configs" / "teacher_labeling.json"
+DEFAULT_CONFIG = REPO_ROOT / "app" / "configs" / "teacher_labeling.json"
 DEFAULT_OUTPUT = REPO_ROOT / "runtime_logs" / "teacher_labeling" / "api_concurrency_benchmark.json"
 
 
@@ -41,7 +41,7 @@ async def _one_request(
     started = time.perf_counter()
     try:
         if image_data_url:
-            from evaluation.layout_teacher import LAYOUT_SCHEMA, PASS_PROMPTS
+            from tools.evaluation.core.layout_teacher import LAYOUT_SCHEMA, PASS_PROMPTS
 
             content: Any = [
                 {"type": "text", "text": PASS_PROMPTS["proposal"]},

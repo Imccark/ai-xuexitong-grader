@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from evaluation.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION, QUALITY_VERSION
+from tools.evaluation.core.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION, QUALITY_VERSION
 from tools.layout.prepare_layout_cloud_dataset import (
     DEFAULT_ALIAS_MAP,
     DEFAULT_EXPECTED_SOURCE_PAGES,

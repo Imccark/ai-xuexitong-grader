@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from grading_graph.nodes.ingest import IngestLimits, build_ingest_manifest
-from grading_graph.nodes.image_quality import (
+from app.grading_graph.nodes.ingest import IngestLimits, build_ingest_manifest
+from app.grading_graph.nodes.image_quality import (
     WORKING_MAX_PIXELS,
     analyze_image_bytes,
     materialize_image_variants,

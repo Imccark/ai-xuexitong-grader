@@ -9,14 +9,14 @@ from typing import Any
 
 import pytest
 
-from grading_graph.graph import GraphExecutionSettings, _symbol_audit_image_refs, build_grading_graph, migrate_graph_state
-from grading_graph.adapters.batch import candidate_has_provider_error, run_student_candidate
-from grading_graph.adapters.batch import run_candidate_states
-from grading_graph.adapters.rerun import run_targeted_question_rerun
-from grading_graph.checkpoint import open_sqlite_checkpointer
-from grading_graph.nodes.symbol_auditor import SymbolAuditor
-from grading_graph.nodes.math_checks import check_matrix_calculations, check_numeric_equations
-from grading_graph.schemas import (
+from app.grading_graph.graph import GraphExecutionSettings, _symbol_audit_image_refs, build_grading_graph, migrate_graph_state
+from app.grading_graph.adapters.batch import candidate_has_provider_error, run_student_candidate
+from app.grading_graph.adapters.batch import run_candidate_states
+from app.grading_graph.adapters.rerun import run_targeted_question_rerun
+from app.grading_graph.checkpoint import open_sqlite_checkpointer
+from app.grading_graph.nodes.symbol_auditor import SymbolAuditor
+from app.grading_graph.nodes.math_checks import check_matrix_calculations, check_numeric_equations
+from app.grading_graph.schemas import (
     AnswerSliceRef,
     Budget,
     CandidateResult,
@@ -30,13 +30,13 @@ from grading_graph.schemas import (
     TranscriptionSpan,
     GraphState,
 )
-from grading_graph.state import GradingGraphState
-from grading_graph.nodes.grader import GradingProviderError, QuestionGrader
-from grading_graph.nodes.verifier import TargetedVerifier
-from grading_graph.budget import RateLimitedJsonProvider
-from grading_graph.cache import CachedJsonProvider, JsonResponseCache
-from grading_graph.store import atomic_write_json
-from grade_evaluator import safe_exception_type
+from app.grading_graph.state import GradingGraphState
+from app.grading_graph.nodes.grader import GradingProviderError, QuestionGrader
+from app.grading_graph.nodes.verifier import TargetedVerifier
+from app.grading_graph.budget import RateLimitedJsonProvider
+from app.grading_graph.cache import CachedJsonProvider, JsonResponseCache
+from app.grading_graph.store import atomic_write_json
+from app.grade_evaluator import safe_exception_type
 
 
 FAKE_SK = "sk-" + "123456789012"
@@ -194,7 +194,7 @@ def test_targeted_verifier_backs_off_between_transient_rounds(monkeypatch) -> No
             }
 
     sleeps: list[float] = []
-    monkeypatch.setattr("grading_graph.nodes.verifier.time.sleep", sleeps.append)
+    monkeypatch.setattr("app.grading_graph.nodes.verifier.time.sleep", sleeps.append)
     provider = FlakyProvider()
     result = TargetedVerifier(provider, backoff_base=0.25).verify(
         QuestionResult(question_id="1.1.1", verdict="unreadable", confidence=0.0, needs_verification=True, risk_level="high"),
@@ -1356,8 +1356,8 @@ def test_pipeline_retry_and_verification_config_is_consumed_by_graph(monkeypatch
         observed["verification_rounds"] = self.max_rounds
         return result.model_copy(update={"needs_verification": False, "risk_level": RiskLevel.LOW})
 
-    monkeypatch.setattr("grading_graph.graph.QuestionGrader.grade", fake_grade)
-    monkeypatch.setattr("grading_graph.graph.TargetedVerifier.verify", fake_verify)
+    monkeypatch.setattr("app.grading_graph.graph.QuestionGrader.grade", fake_grade)
+    monkeypatch.setattr("app.grading_graph.graph.TargetedVerifier.verify", fake_verify)
     settings = GraphExecutionSettings.from_pipeline_config(
         {
             "retry": {"max_attempts": 1},

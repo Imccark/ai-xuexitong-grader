@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from evaluation.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION
+from tools.evaluation.core.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

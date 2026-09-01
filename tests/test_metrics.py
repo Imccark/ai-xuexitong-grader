@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from evaluation.metrics import evaluate_candidates, student_hash, wilson_interval
+from tools.evaluation.core.metrics import evaluate_candidates, student_hash, wilson_interval
 
 
 def test_wilson_interval_reports_numerator_denominator_and_bounds() -> None:

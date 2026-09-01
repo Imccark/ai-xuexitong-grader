@@ -8,8 +8,8 @@ from pathlib import Path
 import time
 from typing import Any
 
-from grading_graph.nodes.image_quality import RECTIFICATION_VERSION, rectify_document_bytes
-from grading_graph.store import atomic_write_bytes, atomic_write_json
+from app.grading_graph.nodes.image_quality import RECTIFICATION_VERSION, rectify_document_bytes
+from app.grading_graph.store import atomic_write_bytes, atomic_write_json
 
 
 ROOT = Path(__file__).resolve().parents[2]

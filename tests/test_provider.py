@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from evaluation.provider import FakeProvider
+from tools.evaluation.core.provider import FakeProvider
 
 
 def test_fake_provider_covers_text_image_and_structured_json() -> None:
@@ -27,7 +27,7 @@ def test_fake_provider_covers_text_image_and_structured_json() -> None:
 
 
 def test_offline_provider_fixture_is_data_only() -> None:
-    fixture_path = Path(__file__).parents[1] / "evaluation" / "fixtures" / "provider_responses.json"
+    fixture_path = Path(__file__).parents[1] / "tools" / "evaluation" / "core" / "fixtures" / "provider_responses.json"
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     assert fixture == {
         "text": "fake-text-response",
@@ -38,7 +38,7 @@ def test_offline_provider_fixture_is_data_only() -> None:
 
 @pytest.mark.online
 def test_online_provider_smoke(online_budget: dict[str, int]) -> None:
-    from evaluation.provider import OpenAICompatSmokeProvider
+    from tools.evaluation.core.provider import OpenAICompatSmokeProvider
 
     provider = OpenAICompatSmokeProvider.from_environment(online_budget)
     assert provider.complete_text("Reply with the word ok.")

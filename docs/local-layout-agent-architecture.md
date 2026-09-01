@@ -47,7 +47,7 @@ normalized page
 
 ## 配置
 
-`configs/agent_pipeline.json` 的 `local_layout` 段控制：
+`app/configs/agent_pipeline.json` 的 `local_layout` 段控制：
 
 - 模型名、模型目录和推理引擎；
 - 是否允许自动下载（生产必须为 `false`）；

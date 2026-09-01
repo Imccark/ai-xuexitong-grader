@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from evaluation.compute_metrics import main
+from tools.evaluation.core.compute_metrics import main
 
 
 def test_compute_metrics_cli_accepts_model_only_evaluation(workspace_tmp_path, monkeypatch, capsys) -> None:

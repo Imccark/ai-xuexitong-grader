@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grading_graph.graph import _question_image_refs, build_grading_graph
-from grading_graph.nodes.evidence_gate import build_evidence_packet
-from grading_graph.nodes.grader import QuestionGrader
-from grading_graph.nodes.question_locator import QuestionLocator
-from grading_graph.nodes.rubric_compiler import compile_atomic_rubrics, deterministic_rubric_verdict
-from grading_graph.nodes.verifier import TargetedVerifier
-from grading_graph.schemas import (
+from app.grading_graph.graph import _question_image_refs, build_grading_graph
+from app.grading_graph.nodes.evidence_gate import build_evidence_packet
+from app.grading_graph.nodes.grader import QuestionGrader
+from app.grading_graph.nodes.question_locator import QuestionLocator
+from app.grading_graph.nodes.rubric_compiler import compile_atomic_rubrics, deterministic_rubric_verdict
+from app.grading_graph.nodes.verifier import TargetedVerifier
+from app.grading_graph.schemas import (
     AnswerSliceRef,
     Budget,
     EvidenceRef,

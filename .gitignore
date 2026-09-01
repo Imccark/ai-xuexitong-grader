@@ -29,10 +29,10 @@ missfont.log
 # OS/editor noise
 .DS_Store
 Thumbs.db
-configs/assignments/第一周.json
-configs/assignments/第二周.json
-configs/env/local.env
-configs/env/review_ui_settings.json
+app/configs/assignments/*.json
+!app/configs/assignments/.gitkeep
+app/configs/env/local.env
+app/configs/env/review_ui_settings.json
 runtime_logs/
 第二周/
 
@@ -70,7 +70,7 @@ review_app.audit*.log
 
 # Private local automation and provider configuration
 /.codex/skills/
-/configs/teacher_labeling.json
+/app/configs/teacher_labeling.json
 /docs/langgraph-multi-agent-grading-upgrade-plan.md
 /docs/layout-dataset-cloud-readiness.md
 .env
@@ -83,6 +83,6 @@ review_app.audit*.log
 /ai_xuexitong_grader_clean-*/
 
 # Locally deployed PaddleOCR/PaddleX weights (downloaded, not versioned)
-models/document_layout/PP-DocLayoutV3/
-models/ocr/PP-OCRv5_mobile_det/
-models/ocr/PP-OCRv5_mobile_rec/
+app/models/document_layout/PP-DocLayoutV3/
+app/models/ocr/PP-OCRv5_mobile_det/
+app/models/ocr/PP-OCRv5_mobile_rec/

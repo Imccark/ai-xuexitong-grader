@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-import review_app
-from project_config import AssignmentConfig, SubjectConfig
-from grading_graph.review import ReviewStore
-from grading_graph.schemas import CandidateResult, EvidenceRef, QuestionResult
-from grading_graph.store import atomic_write_json
+from app import review_app
+from app.project_config import AssignmentConfig, SubjectConfig
+from app.grading_graph.review import ReviewStore
+from app.grading_graph.schemas import CandidateResult, EvidenceRef, QuestionResult
+from app.grading_graph.store import atomic_write_json
 
 
 def _assignment(tmp_path: Path) -> AssignmentConfig:
@@ -119,10 +119,10 @@ def test_review_http_api_is_agent_read_only_and_rejects_manual_mutation(workspac
 
 
 def test_review_console_grading_command_uses_formal_agent_engine_and_budgets() -> None:
-    assignment_path = Path("configs/assignments/第一周.json").resolve()
+    assignment_path = Path("app/configs/assignments/第一周.json").resolve()
     command = review_app._build_pipeline_command("grading", assignment_path, 4, False)
 
-    assert command[1:4] == ["-u", "run_batch_grading.py", "--assignment"]
+    assert command[1:5] == ["-u", "-m", "app.run_batch_grading", "--assignment"]
     assert command[command.index("--engine") + 1] == "candidate"
     assert "--online" in command
     assert int(command[command.index("--max-students") + 1]) >= 1
