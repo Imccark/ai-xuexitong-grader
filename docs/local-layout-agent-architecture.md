@@ -94,7 +94,7 @@ normalized page
 在线 Provider，报告只保存图片 SHA-256，不保存源图片路径：
 
 ```powershell
-.\.venv\Scripts\python.exe benchmark_local_layout.py `
+uv run python -m tools.layout.benchmark_local_layout `
   --images 第四周\processed_images `
   --answer-manifest evaluation\answer_manifests\第四周\manifest.json `
   --max-pages 200

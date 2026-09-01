@@ -36,7 +36,7 @@ from evaluation.layout_teacher import (
     sanitize_layout,
     validate_layout,
 )
-from run_teacher_labeling import migrate_quality_metadata, pending_manifest_rows
+from tools.layout.run_teacher_labeling import migrate_quality_metadata, pending_manifest_rows
 from evaluation.reconcile_layout_labels import reconcile_result
 
 

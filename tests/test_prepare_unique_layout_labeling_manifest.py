@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from prepare_unique_layout_labeling_manifest import build_unique_manifest
+from tools.layout.prepare_unique_layout_labeling_manifest import build_unique_manifest
 
 
 def test_exact_duplicates_choose_existing_label_as_canonical() -> None:

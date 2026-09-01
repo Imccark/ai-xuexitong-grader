@@ -16,10 +16,10 @@ from evaluation.layout_teacher import (
     read_jsonl,
     write_jsonl,
 )
-from prepare_rectified_labeling_images import prepare_rectified_dataset
+from tools.layout.prepare_rectified_labeling_images import prepare_rectified_dataset
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / "configs" / "teacher_labeling.json"
 DEFAULT_SOURCE_PRIVATE_MANIFEST = ROOT / "runtime_logs" / "teacher_labeling" / "pilot_private.jsonl"
 DEFAULT_PRIVATE_MANIFEST = ROOT / "runtime_logs" / "teacher_labeling" / "pilot_rectified_v4_private.jsonl"
@@ -237,7 +237,10 @@ def main() -> int:
     output_dir = Path(args.output_dir or (DEFAULT_FULL_OUTPUT if args.profile == "full" else DEFAULT_OUTPUT))
     if args.prepare:
         if args.profile != "pilot":
-            raise SystemExit("full preprocessing is a separate resumable job; run prepare_all_layout_images.py")
+            raise SystemExit(
+                "full preprocessing is a separate resumable job; "
+                "run `python -m tools.layout.prepare_all_layout_images`"
+            )
         rows = build_pilot_manifest(ROOT, max_pages=max_pages)
         write_jsonl(DEFAULT_SOURCE_PRIVATE_MANIFEST, rows)
         prepare_rectified_dataset(

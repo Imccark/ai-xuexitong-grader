@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from evaluation.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION, QUALITY_VERSION
-from prepare_layout_cloud_dataset import (
+from tools.layout.prepare_layout_cloud_dataset import (
     DEFAULT_ALIAS_MAP,
     DEFAULT_EXPECTED_SOURCE_PAGES,
     DEFAULT_IMAGES,

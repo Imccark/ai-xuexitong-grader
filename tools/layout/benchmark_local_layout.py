@@ -17,7 +17,7 @@ from grading_graph.schemas import AnswerManifest
 from grading_graph.store import atomic_write_json
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / "configs" / "agent_pipeline.json"
 
 

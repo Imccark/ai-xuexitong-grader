@@ -12,7 +12,7 @@ from grading_graph.nodes.image_quality import RECTIFICATION_VERSION, rectify_doc
 from grading_graph.store import atomic_write_bytes, atomic_write_json
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT = ROOT / "runtime_logs" / "teacher_labeling" / "pilot_private.jsonl"
 DEFAULT_OUTPUT = ROOT / "datasets" / "layout_pilot_v4"
 DEFAULT_PRIVATE_OUTPUT = ROOT / "runtime_logs" / "teacher_labeling" / "pilot_rectified_v4_private.jsonl"

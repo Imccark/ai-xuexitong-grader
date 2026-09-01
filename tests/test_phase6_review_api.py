@@ -69,14 +69,20 @@ def _candidate() -> CandidateResult:
 
 
 def _request(server, method: str, path: str, payload: dict | None = None):
-    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
     body = json.dumps(payload or {}, ensure_ascii=False) if payload is not None else None
     headers = {"Content-Type": "application/json"} if body is not None else {}
-    connection.request(method, path, body=body, headers=headers)
-    response = connection.getresponse()
-    data = json.loads(response.read().decode("utf-8"))
-    connection.close()
-    return response.status, data
+    for attempt in range(3):
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        try:
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            data = json.loads(response.read().decode("utf-8"))
+            return response.status, data
+        except (ConnectionAbortedError, ConnectionResetError):
+            if attempt == 2:
+                raise
+        finally:
+            connection.close()
 
 
 def test_review_http_api_is_agent_read_only_and_rejects_manual_mutation(workspace_tmp_path) -> None:

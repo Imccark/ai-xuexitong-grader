@@ -272,6 +272,7 @@ ai-xuexitong-grader/
 ├── models/
 ├── prompts/
 ├── review_ui/
+├── tools/                  布局、评测和高级批改工具
 ├── create_week.py
 ├── run_preprocessing.py
 ├── run_batch_grading.py

@@ -6,8 +6,8 @@ from pathlib import Path
 
 from PIL import Image
 
-import prepare_rectified_labeling_images as labeling
-from prepare_rectified_labeling_images import prepare_rectified_dataset
+from tools.layout import prepare_rectified_labeling_images as labeling
+from tools.layout.prepare_rectified_labeling_images import prepare_rectified_dataset
 
 
 def test_prepare_rectified_dataset_uses_opaque_names_and_private_paths(workspace_tmp_path: Path) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from derive_layout_orientation_overrides import derive_orientation_overrides
+from tools.layout.derive_layout_orientation_overrides import derive_orientation_overrides
 from evaluation.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION
 
 

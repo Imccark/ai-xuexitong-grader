@@ -5,7 +5,7 @@ import json
 
 from PIL import Image
 
-from audit_layout_source_dataset import audit_source_dataset
+from tools.layout.audit_layout_source_dataset import audit_source_dataset
 
 
 def _jsonl(path, rows):

@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 
 from evaluation.layout_teacher import build_pilot_manifest, write_jsonl
-from prepare_rectified_labeling_images import prepare_rectified_dataset
+from tools.layout.prepare_rectified_labeling_images import prepare_rectified_dataset
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE_MANIFEST = ROOT / "runtime_logs" / "teacher_labeling" / "all_pages_private.jsonl"
 DEFAULT_OUTPUT = ROOT / "datasets" / "layout_all_v4"
 DEFAULT_PRIVATE_OUTPUT = ROOT / "runtime_logs" / "teacher_labeling" / "all_rectified_v4_private.jsonl"

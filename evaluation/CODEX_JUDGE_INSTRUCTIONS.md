@@ -1,6 +1,6 @@
 # Codex / ChatGPT Work 多模态裁判协议
 
-本协议让当前 Codex 或 ChatGPT Work 任务直接担任千问候选结果的独立裁判，不需要 `OPENAI_API_KEY`，也不调用 `run_model_judge.py` 的在线 Provider。
+本协议让当前 Codex 或 ChatGPT Work 任务直接担任千问候选结果的独立裁判，不需要 `OPENAI_API_KEY`，也不调用 `tools.evaluation.run_model_judge` 的在线 Provider。
 
 ## 硬性顺序
 

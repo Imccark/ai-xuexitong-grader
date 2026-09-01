@@ -17,7 +17,7 @@ from PIL import Image
 from evaluation.layout_teacher import CONSENSUS_VERSION, LABELING_VERSION, QUALITY_VERSION, validate_layout
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LABELS = ROOT / "evaluation" / "layout_labels" / "all_rectified_v4_unique_results" / "labels.jsonl"
 DEFAULT_MANIFEST = ROOT / "datasets" / "layout_all_v4" / "manifest.jsonl"
 DEFAULT_IMAGES = ROOT / "datasets" / "layout_all_v4" / "images"
