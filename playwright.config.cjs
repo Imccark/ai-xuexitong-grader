@@ -11,7 +11,7 @@ module.exports = defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: `"${python}" -u review_app.py --assignment "configs/assignments/第一周.json" --host 127.0.0.1 --port 8765`,
+    command: `"${python}" -u review_app.py --assignment "tests/fixtures/assignment.json" --host 127.0.0.1 --port 8765`,
     url: "http://127.0.0.1:8765",
     reuseExistingServer: true,
     timeout: 120_000,

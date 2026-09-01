@@ -15,9 +15,9 @@
 ```powershell
 git status --short
 uv lock --check
-uv pip check --python "C:\Users\30470\Envs\base\Scripts\python.exe"
-C:\Users\30470\Envs\base\Scripts\python.exe -m pytest -q -m "not online"
-C:\Users\30470\Envs\base\Scripts\python.exe -m evaluation.validate_model_judgments `
+uv run python -m pip check
+uv run pytest -q -m "not online"
+uv run python -m evaluation.validate_model_judgments `
   --judgments evaluation/model_judgments.jsonl `
   --output evaluation/reports/model_judge_gate_report.json
 ```

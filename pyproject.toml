@@ -3,10 +3,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-xuexitong-grader-clean"
-version = "1.0.0"
+name = "ai-xuexitong-grader"
+version = "2.0.0"
 description = "AI 学习通作业批改助手"
-requires-python = ">=3.13"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13,<3.14"
 dependencies = [
   "openai",
   "PyMuPDF",
@@ -20,8 +22,6 @@ dependencies = [
   "ImageHash",
   "sympy",
   "python-docx",
-  "pytest",
-  "pytest-asyncio",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +34,15 @@ layout = [
   "paddlepaddle>=3.2,<4",
 ]
 
+[dependency-groups]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+]
+
+[tool.uv]
+package = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
@@ -41,6 +50,3 @@ addopts = "-ra -p no:cacheprovider"
 markers = [
   "online: requires explicit online provider access",
 ]
-
-[tool.setuptools.packages.find]
-include = ["evaluation*", "grading_graph*"]

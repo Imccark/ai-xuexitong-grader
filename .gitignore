@@ -68,6 +68,20 @@ pytest-*/
 review_app.audit*.log
 .claude/
 
+# Private local automation and provider configuration
+/.codex/skills/
+/configs/teacher_labeling.json
+/docs/langgraph-multi-agent-grading-upgrade-plan.md
+/docs/layout-dataset-cloud-readiness.md
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Generated source/build directories
+/ai_xuexitong_grader_clean-*/
+
 # Locally deployed PaddleOCR/PaddleX weights (downloaded, not versioned)
 models/document_layout/PP-DocLayoutV3/
 models/ocr/PP-OCRv5_mobile_det/

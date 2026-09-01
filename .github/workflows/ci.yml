@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.14"
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check public release contents
+        run: python scripts/check_public_release.py
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --extra orientation --group dev
+
+      - name: Run offline Python tests
+        run: uv run pytest -q -m "not online"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install chromium
+
+      - name: Run UI tests
+        env:
+          XUEXITONG_PYTHON: ${{ github.workspace }}\.venv\Scripts\python.exe
+        run: npm test

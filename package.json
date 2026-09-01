@@ -1,7 +1,7 @@
 {
-  "name": "ai-xuexitong-grader-clean",
-  "version": "1.0.0",
-  "description": "![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white) ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/Platform-Xuexitong-orange) ![UI](https://img.shields.io/badge/Review-Local%20Web%20UI-0A7EA4)",
+  "name": "ai-xuexitong-grader",
+  "version": "2.0.0",
+  "description": "LangGraph 多智能体学习通作业批改与本地审阅工具",
   "main": "index.js",
   "scripts": {
     "test": "playwright test"
@@ -11,8 +11,8 @@
     "url": "git+https://github.com/Imccark/ai-xuexitong-grader.git"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Imccark",
+  "license": "MIT",
   "type": "commonjs",
   "bugs": {
     "url": "https://github.com/Imccark/ai-xuexitong-grader/issues"
