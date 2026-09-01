@@ -2,13 +2,9 @@ const state = {
   students: [],
   filteredStudents: [],
   currentStudentId: null,
-  originalPayload: null,
-  isSaving: false,
-  moduleEditorListenersBound: false,
+  currentReview: null,
   layoutControlsBound: false,
   resizeHandleBound: false,
-  itemUiState: {},
-  nextItemId: 1,
   currentView: null,
   weeks: [],
   selectedWeekId: null,
@@ -33,17 +29,17 @@ const state = {
   exportStatusPollToken: 0,
   studentLoadToken: 0,
 };
-const ITEM_MUTABLE_MODULE_KEYWORDS = ["错误细节", "证明题审查", "改进建议"];
 
 const studentCountEl = document.getElementById("studentCount");
 const studentListEl = document.getElementById("studentList");
 const studentSearchEl = document.getElementById("studentSearch");
+const reviewFilterEl = document.getElementById("reviewFilter");
 const studentTitleEl = document.getElementById("studentTitle");
 const pageMetaEl = document.getElementById("pageMeta");
 const imagesContainerEl = document.getElementById("imagesContainer");
 const modulesContainerEl = document.getElementById("modulesContainer");
 const saveStatusEl = document.getElementById("saveStatus");
-const saveBtnEl = document.getElementById("saveBtn");
+const reviewRiskPanelEl = document.getElementById("reviewRiskPanel");
 const prevStudentBtnEl = document.getElementById("prevStudentBtn");
 const nextStudentBtnEl = document.getElementById("nextStudentBtn");
 const exportImageBtnEl = document.getElementById("exportImageBtn");
@@ -307,74 +303,6 @@ function normalizePayload(payload) {
   };
 }
 
-function payloadSignature(payload) {
-  return JSON.stringify(payload);
-}
-
-function canonicalizePayload(payload) {
-  const safePayload = payload && typeof payload === "object" ? payload : {};
-  const safeModules = safePayload.modules && typeof safePayload.modules === "object" ? safePayload.modules : {};
-  const normalizedModules = {};
-
-  Object.keys(safeModules)
-    .sort()
-    .forEach((moduleName) => {
-      const moduleData = safeModules[moduleName] && typeof safeModules[moduleName] === "object" ? safeModules[moduleName] : {};
-      const items = Array.isArray(moduleData.items)
-        ? moduleData.items.map((item) => String(item).trim()).filter(Boolean)
-        : [];
-      normalizedModules[moduleName] = {
-        items,
-      };
-    });
-
-  return {
-    student_name_or_id: String(safePayload.student_name_or_id || "").trim(),
-    overall: String(safePayload.overall || "").trim(),
-    modules: normalizedModules,
-  };
-}
-
-function getCurrentPayloadFromUI() {
-  const studentNameInput = document.querySelector('[data-role="student-name"]');
-  const overallInput = document.querySelector('[data-role="overall"]');
-  const moduleCards = modulesContainerEl.querySelectorAll(".module-card[data-module]");
-
-  const modules = {};
-  moduleCards.forEach((card) => {
-    const moduleName = card.dataset.module;
-    const rows = card.querySelectorAll(".item-row[data-item-id]");
-    const items = [];
-    rows.forEach((row) => {
-      const itemId = row.dataset.itemId;
-      const itemState = itemId ? state.itemUiState[itemId] : null;
-      const value = itemState ? String(itemState.rawText || "").trim() : "";
-      if (value) {
-        items.push(value);
-      }
-    });
-    modules[moduleName] = {
-      raw_text: items.join("\n"),
-      items,
-    };
-  });
-
-  return {
-    student_name_or_id: studentNameInput ? studentNameInput.value.trim() : "",
-    overall: overallInput ? overallInput.value.trim() : "",
-    modules,
-  };
-}
-
-function isDirty() {
-  if (!state.originalPayload) {
-    return false;
-  }
-  const currentPayload = canonicalizePayload(getCurrentPayloadFromUI());
-  const originalPayload = canonicalizePayload(state.originalPayload);
-  return payloadSignature(currentPayload) !== payloadSignature(originalPayload);
-}
-
 function updateSaveStatus(message) {
   saveStatusEl.textContent = message;
 }
@@ -525,10 +453,29 @@ function currentIndex() {
   return state.filteredStudents.findIndex((student) => student.id === state.currentStudentId);
 }
 
+const REVIEW_STATUS_LABELS = {
+  pending: "未批改",
+  candidate_ready: "Agent 已完成",
+  review_required: "Agent 未完全收敛",
+  unreadable: "图片不可辨认",
+  reference_mismatch: "题目版本不匹配",
+  pipeline_failed: "流程失败",
+};
+
+function reviewStatusLabel(status) {
+  return REVIEW_STATUS_LABELS[String(status || "")] || String(status || "未知状态");
+}
+
 function renderStudentList() {
   studentListEl.innerHTML = "";
   const keyword = studentSearchEl.value.trim().toLowerCase();
-  state.filteredStudents = state.students.filter((student) => student.id.toLowerCase().includes(keyword));
+  const statusFilter = reviewFilterEl ? reviewFilterEl.value : "all";
+  state.filteredStudents = state.students.filter((student) => {
+    const studentId = String(student.id || "");
+    const matchesKeyword = studentId.toLowerCase().includes(keyword);
+    const matchesStatus = statusFilter === "all" || String(student.reviewStatus || "pending") === statusFilter;
+    return matchesKeyword && matchesStatus;
+  });
   studentCountEl.textContent = `共 ${state.filteredStudents.length} 位学生`;
 
   if (!state.filteredStudents.length) {
@@ -541,15 +488,138 @@ function renderStudentList() {
     button.type = "button";
     button.className = `student-item${student.id === state.currentStudentId ? " active" : ""}`;
     button.innerHTML = `
-      <h3>${student.id}</h3>
-      <p class="student-meta">${student.pageCount} 页 · ${student.hasResult ? "已有结果" : "待写结果"}</p>
+      <h3>${escapeHtml(student.id)}</h3>
+      <p class="student-meta">${student.pageCount} 页 · ${student.hasResult ? "已有结果" : "待写结果"} · ${escapeHtml(reviewStatusLabel(student.reviewStatus))}</p>
     `;
     button.addEventListener("click", () => loadStudent(student.id));
     studentListEl.appendChild(button);
   });
 }
 
-function renderImages(images) {
+function drawEvidenceBox(card, bbox) {
+  if (!card || !Array.isArray(bbox) || bbox.length !== 4) {
+    return;
+  }
+  const image = card.querySelector("img");
+  const box = card.querySelector(".evidence-bbox");
+  if (!image || !box || !image.naturalWidth || !image.naturalHeight) {
+    return;
+  }
+  const imageRect = image.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  const [rawX1, rawY1, rawX2, rawY2] = bbox.map((value) => Number(value));
+  const x1 = Math.max(0, Math.min(image.naturalWidth, rawX1));
+  const y1 = Math.max(0, Math.min(image.naturalHeight, rawY1));
+  const x2 = Math.max(x1, Math.min(image.naturalWidth, rawX2));
+  const y2 = Math.max(y1, Math.min(image.naturalHeight, rawY2));
+  box.style.left = `${imageRect.left - cardRect.left + (x1 / image.naturalWidth) * imageRect.width}px`;
+  box.style.top = `${imageRect.top - cardRect.top + (y1 / image.naturalHeight) * imageRect.height}px`;
+  box.style.width = `${((x2 - x1) / image.naturalWidth) * imageRect.width}px`;
+  box.style.height = `${((y2 - y1) / image.naturalHeight) * imageRect.height}px`;
+  box.classList.add("is-visible");
+}
+
+function scrollToEvidencePage(page, bbox = null) {
+  const index = Math.max(0, Number(page || 1) - 1);
+  const card = imagesContainerEl.children[index];
+  if (card) {
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.add("evidence-focus");
+    document.querySelectorAll(".evidence-bbox.is-visible").forEach((box) => box.classList.remove("is-visible"));
+    const image = card.querySelector("img");
+    if (image) {
+      const draw = () => drawEvidenceBox(card, bbox);
+      if (image.complete) {
+        draw();
+      } else {
+        image.addEventListener("load", draw, { once: true });
+      }
+    }
+    window.setTimeout(() => card.classList.remove("evidence-focus"), 1300);
+  }
+}
+
+function renderReviewRiskPanel(review) {
+  if (!reviewRiskPanelEl) {
+    return;
+  }
+  reviewRiskPanelEl.innerHTML = "";
+  if (!review) {
+    return;
+  }
+  const candidate = review.candidate || {};
+  const heading = document.createElement("div");
+  heading.className = "review-risk-header";
+  const summary = document.createElement("div");
+  summary.innerHTML = `<strong>Agent 状态：${escapeHtml(reviewStatusLabel(review.status))}</strong><span>整体：${escapeHtml(candidate.overall || "unknown")} · 未收敛风险 ${Number(candidate.unresolved_risk_count || 0)}</span>`;
+  heading.appendChild(summary);
+  const readOnlyBadge = document.createElement("span");
+  readOnlyBadge.className = "review-readonly-badge";
+  readOnlyBadge.textContent = "只读 · Agent 正式结果";
+  heading.appendChild(readOnlyBadge);
+  reviewRiskPanelEl.appendChild(heading);
+
+  const results = Object.entries(candidate.question_results || {}).sort(([left], [right]) => left.localeCompare(right));
+  if (!results.length) {
+    const note = document.createElement("p");
+    note.className = "review-risk-empty";
+    note.textContent = "当前尚无逐题 Agent 结果，请先在控制台运行批改任务。";
+    reviewRiskPanelEl.appendChild(note);
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "review-risk-list";
+  results.forEach(([questionId, result]) => {
+    const card = document.createElement("article");
+    card.className = `review-risk-item${result.needs_verification ? " is-risk" : ""}`;
+    const title = document.createElement("div");
+    title.className = "review-risk-item-title";
+    title.innerHTML = `<strong>${escapeHtml(questionId)}</strong><span>${escapeHtml(result.verdict || "unknown")} · ${escapeHtml(result.risk_level || "low")} · ${(Number(result.confidence || 0) * 100).toFixed(0)}%</span>`;
+    card.appendChild(title);
+    const evidence = document.createElement("div");
+    evidence.className = "review-evidence-list";
+    const refs = [...(result.evidence_refs || [])];
+    (result.rubric_decisions || []).forEach((decision) => refs.push(...(decision.evidence_refs || [])));
+    if (refs.length) {
+      refs.forEach((ref) => {
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = "evidence-link";
+        link.textContent = `证据：第 ${ref.page} 页 [${(ref.bbox || []).join(", ")}]`;
+        link.addEventListener("click", () => scrollToEvidencePage(ref.page, ref.bbox));
+        evidence.appendChild(link);
+      });
+    } else {
+      evidence.textContent = "暂无证据定位";
+    }
+    card.appendChild(evidence);
+    const details = document.createElement("div");
+    details.className = "review-result-details";
+    const transcriptionText = (result.transcription || []).map((span) => String(span.text || "")).filter(Boolean).join(" | ");
+    if (transcriptionText) {
+      const transcription = document.createElement("div");
+      transcription.textContent = `忠实转写：${transcriptionText}`;
+      details.appendChild(transcription);
+    }
+    (result.rubric_decisions || []).forEach((decision) => {
+      const rubric = document.createElement("div");
+      rubric.textContent = `评分点 ${decision.rubric_id || ""}：${decision.status || "unknown"}${decision.reason ? ` · ${decision.reason}` : ""}`;
+      details.appendChild(rubric);
+    });
+    if (result.verifier_result) {
+      const verifier = document.createElement("div");
+      verifier.textContent = `验证器：${result.verifier_result.reason || (result.verifier_result.decisive ? "已裁决" : "未裁决")}`;
+      details.appendChild(verifier);
+    }
+    if (details.childElementCount) {
+      card.appendChild(details);
+    }
+    list.appendChild(card);
+  });
+  reviewRiskPanelEl.appendChild(list);
+}
+
+function renderImages(images, imageVariants = []) {
   imagesContainerEl.innerHTML = "";
   if (!images.length) {
     imagesContainerEl.innerHTML = '<div class="empty-state">该学生暂无图片。</div>';
@@ -557,22 +627,45 @@ function renderImages(images) {
   }
 
   images.forEach((imageUrl, index) => {
+    const variant = imageVariants[index] || { original: imageUrl };
     const wrapper = document.createElement("article");
     wrapper.className = "image-card";
-    wrapper.innerHTML = `
-      <h3>第 ${index + 1} 页</h3>
-      <img src="${encodeURI(imageUrl)}" alt="第 ${index + 1} 页作业" loading="lazy" />
-    `;
+    wrapper.dataset.page = String(variant.page || index + 1);
+    const heading = document.createElement("h3");
+    heading.textContent = `第 ${index + 1} 页`;
+    wrapper.appendChild(heading);
+    const toolbar = document.createElement("div");
+    toolbar.className = "image-view-toolbar";
+    const label = document.createElement("label");
+    label.textContent = "视图";
+    const select = document.createElement("select");
+    select.className = "image-view-select";
+    [["original", "原图"], ["rectified", "平铺图"], ["normalized", "规范图"], ["enhanced", "增强图"]].forEach(([view, viewLabel]) => {
+      if (!variant[view]) {
+        return;
+      }
+      const option = document.createElement("option");
+      option.value = view;
+      option.textContent = viewLabel;
+      select.appendChild(option);
+    });
+    const image = document.createElement("img");
+    image.src = encodeURI(variant.original || imageUrl);
+    image.alt = `第 ${index + 1} 页作业`;
+    image.loading = "lazy";
+    select.addEventListener("change", () => {
+      image.src = encodeURI(variant[select.value] || variant.original || imageUrl);
+    });
+    label.appendChild(select);
+    toolbar.appendChild(label);
+    wrapper.appendChild(toolbar);
+    wrapper.appendChild(image);
+    const evidenceBox = document.createElement("div");
+    evidenceBox.className = "evidence-bbox";
+    evidenceBox.setAttribute("aria-hidden", "true");
+    wrapper.appendChild(evidenceBox);
     imagesContainerEl.appendChild(wrapper);
   });
-}
-
-function autoResizeTextarea(textarea) {
-  if (!textarea) {
-    return;
-  }
-  textarea.style.height = "auto";
-  textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
 function containsMatrixExpression(expr) {
@@ -854,275 +947,16 @@ function renderMarkdownLatex(rawText, previewEl, options = {}) {
   }
 }
 
-function getItemState(itemId) {
-  if (!itemId || !state.itemUiState[itemId]) {
-    return null;
-  }
-  return state.itemUiState[itemId];
-}
-
-function applyRowMode(row) {
-  const itemId = row?.dataset.itemId;
-  const itemState = getItemState(itemId);
-  if (!row || !itemState) {
-    return;
-  }
-
-  const previewEl = row.querySelector('[data-role="module-preview"]');
-  const textarea = row.querySelector("textarea[data-role='module-item-editor']");
-  const toggleBtn = row.querySelector('button[data-role="toggle-edit"]');
-
-  if (!previewEl || !textarea || !toggleBtn) {
-    return;
-  }
-
-  if (itemState.isEditing) {
-    previewEl.classList.add("is-hidden");
-    textarea.classList.remove("is-hidden");
-    textarea.value = itemState.rawText;
-    autoResizeTextarea(textarea);
-    toggleBtn.textContent = "✓";
-    toggleBtn.title = "保存";
-    toggleBtn.setAttribute("aria-label", "保存");
-  } else {
-    previewEl.classList.remove("is-hidden");
-    textarea.classList.add("is-hidden");
-    renderMarkdownLatex(itemState.rawText, previewEl, { preferDisplayForMatrices: true });
-    toggleBtn.textContent = "✎";
-    toggleBtn.title = "编辑";
-    toggleBtn.setAttribute("aria-label", "编辑");
-  }
-}
-
-function enterEditMode(row) {
-  const itemId = row?.dataset.itemId;
-  const itemState = getItemState(itemId);
-  if (!row || !itemState) {
-    return;
-  }
-  itemState.isEditing = true;
-  applyRowMode(row);
-  const textarea = row.querySelector("textarea[data-role='module-item-editor']");
-  if (textarea) {
-    textarea.focus();
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-  }
-}
-
-function saveRowEdit(row) {
-  const itemId = row?.dataset.itemId;
-  const itemState = getItemState(itemId);
-  if (!row || !itemState) {
-    return;
-  }
-  const textarea = row.querySelector("textarea[data-role='module-item-editor']");
-  itemState.rawText = textarea ? textarea.value : itemState.rawText;
-  itemState.isEditing = false;
-  applyRowMode(row);
-}
-
-function bindModuleEditorListeners() {
-  if (!state.moduleEditorListenersBound) {
-    modulesContainerEl.addEventListener("input", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
-        return;
-      }
-      if (target instanceof HTMLTextAreaElement && target.dataset.role === "module-item-editor") {
-        const row = target.closest(".item-row[data-item-id]");
-        const itemId = row?.dataset.itemId;
-        const itemState = getItemState(itemId);
-        if (itemState) {
-          itemState.rawText = target.value;
-        }
-        autoResizeTextarea(target);
-      }
-      updateSaveStatus(isDirty() ? "未保存" : "已保存");
-    });
-
-    modulesContainerEl.addEventListener("click", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) {
-        return;
-      }
-      const button = target.closest("button[data-role]");
-      if (!button) {
-        return;
-      }
-
-      if (button.dataset.role === "add-item") {
-        const card = button.closest(".module-card[data-module]");
-        if (!card) {
-          return;
-        }
-        const moduleItemsEl = card.querySelector(".module-items");
-        if (!moduleItemsEl) {
-          return;
-        }
-        moduleItemsEl.appendChild(
-          createModuleItemRow("", moduleItemsEl.querySelectorAll(".item-row").length, true, { startEditing: true })
-        );
-        renumberModuleItems(card);
-        updateSaveStatus(isDirty() ? "未保存" : "已保存");
-        return;
-      }
-
-      if (button.dataset.role === "toggle-edit") {
-        const row = button.closest(".item-row[data-item-id]");
-        if (!row) {
-          return;
-        }
-        const itemState = getItemState(row.dataset.itemId);
-        if (!itemState) {
-          return;
-        }
-        if (itemState.isEditing) {
-          saveRowEdit(row);
-        } else {
-          enterEditMode(row);
-        }
-        updateSaveStatus(isDirty() ? "未保存" : "已保存");
-        return;
-      }
-
-      if (button.dataset.role === "delete-item") {
-        const row = button.closest(".item-row");
-        const card = button.closest(".module-card[data-module]");
-        if (!row || !card) {
-          return;
-        }
-        const itemId = row.dataset.itemId;
-        if (itemId) {
-          delete state.itemUiState[itemId];
-        }
-        row.remove();
-        renumberModuleItems(card);
-        updateSaveStatus(isDirty() ? "未保存" : "已保存");
-      }
-    });
-
-    modulesContainerEl.addEventListener("focusout", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLTextAreaElement) || target.dataset.role !== "module-item-editor") {
-        return;
-      }
-      const row = target.closest(".item-row[data-item-id]");
-      if (!row) {
-        return;
-      }
-      if (row.contains(event.relatedTarget)) {
-        return;
-      }
-      const itemState = getItemState(row.dataset.itemId);
-      if (!itemState || !itemState.isEditing) {
-        return;
-      }
-      saveRowEdit(row);
-      updateSaveStatus(isDirty() ? "未保存" : "已保存");
-    });
-
-    state.moduleEditorListenersBound = true;
-  }
-
-  modulesContainerEl.querySelectorAll(".item-row[data-item-id]").forEach((row) => {
-    applyRowMode(row);
-  });
-}
-
-function moduleSupportsItemMutation(moduleName) {
-  return ITEM_MUTABLE_MODULE_KEYWORDS.some((keyword) => moduleName.includes(keyword));
-}
-
-function createModuleItemRow(item, index, canDelete = false, options = {}) {
-  const { startEditing = false } = options;
-  const row = document.createElement("label");
-  row.className = `item-row${canDelete ? " item-row-editable" : ""}`;
-  const itemId = `item-${state.nextItemId++}`;
-  row.dataset.itemId = itemId;
-  state.itemUiState[itemId] = {
-    id: itemId,
-    rawText: String(item || ""),
-    isEditing: Boolean(startEditing),
-  };
-
-  const order = document.createElement("span");
-  order.className = "item-order";
-  order.textContent = `${index + 1}.`;
-
-  const content = document.createElement("div");
-  content.className = "item-content";
-
-  const preview = document.createElement("div");
-  preview.className = "item-preview";
-  preview.dataset.role = "module-preview";
-
-  const textarea = document.createElement("textarea");
-  textarea.dataset.role = "module-item-editor";
-  textarea.rows = 1;
-  textarea.value = String(item || "");
-  textarea.classList.add("is-hidden");
-
-  content.appendChild(preview);
-  content.appendChild(textarea);
-
-  row.appendChild(order);
-  row.appendChild(content);
-
-  if (canDelete) {
-    const actions = document.createElement("div");
-    actions.className = "item-actions";
-
-    const editBtn = document.createElement("button");
-    editBtn.type = "button";
-    editBtn.className = "item-edit-btn";
-    editBtn.dataset.role = "toggle-edit";
-    editBtn.textContent = "✎";
-    editBtn.title = "编辑";
-    editBtn.setAttribute("aria-label", "编辑");
-    actions.appendChild(editBtn);
-
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "item-delete-btn";
-    deleteBtn.dataset.role = "delete-item";
-    deleteBtn.textContent = "🗑";
-    deleteBtn.title = "删除";
-    deleteBtn.setAttribute("aria-label", "删除");
-    actions.appendChild(deleteBtn);
-
-    row.appendChild(actions);
-  }
-
-  applyRowMode(row);
-  return row;
-}
-
-function renumberModuleItems(card) {
-  card.querySelectorAll(".item-row").forEach((row, index) => {
-    const label = row.querySelector("span");
-    if (label) {
-      label.textContent = `${index + 1}.`;
-    }
-  });
-}
 
 function renderModules(payload) {
   modulesContainerEl.innerHTML = "";
-  state.itemUiState = {};
-  state.nextItemId = 1;
 
   const headerCard = document.createElement("article");
   headerCard.className = "module-card summary-card";
   headerCard.innerHTML = `
     <h3>基础信息</h3>
-    <label class="field-block">
-      <span>姓名/学号</span>
-      <input data-role="student-name" type="text" value="${payload.student_name_or_id || ""}" />
-    </label>
-    <label class="field-block">
-      <span>整体情况</span>
-      <input data-role="overall" type="text" value="${payload.overall || ""}" />
-    </label>
+    <div class="readonly-field"><span>姓名/学号</span><strong>${escapeHtml(payload.student_name_or_id || "")}</strong></div>
+    <div class="readonly-field"><span>整体情况</span><strong>${escapeHtml(payload.overall || "尚未生成")}</strong></div>
   `;
   modulesContainerEl.appendChild(headerCard);
 
@@ -1138,31 +972,24 @@ function renderModules(payload) {
   moduleEntries.forEach(([moduleName, block]) => {
     const card = document.createElement("article");
     card.className = "module-card";
-    card.dataset.module = moduleName;
 
     const items = Array.isArray(block.items) && block.items.length ? block.items : [block.raw_text || ""];
-    const canMutateItems = moduleSupportsItemMutation(moduleName);
-
     card.innerHTML = `
       <div class="module-header">
-        <h3>${moduleName}</h3>
-        ${
-          canMutateItems
-            ? '<button type="button" class="module-add-btn" data-role="add-item" title="增加" aria-label="增加">+</button>'
-            : ""
-        }
+        <h3>${escapeHtml(moduleName)}</h3>
       </div>
       <div class="module-items"></div>
     `;
     const moduleItemsEl = card.querySelector(".module-items");
     items.forEach((item, index) => {
-      moduleItemsEl.appendChild(createModuleItemRow(item, index, canMutateItems));
+      const row = document.createElement("div");
+      row.className = "item-row readonly-item-row";
+      row.innerHTML = `<span class="item-order">${index + 1}.</span><div class="item-preview"></div>`;
+      renderMarkdownLatex(String(item || ""), row.querySelector(".item-preview"), { preferDisplayForMatrices: true });
+      moduleItemsEl.appendChild(row);
     });
-    renumberModuleItems(card);
     modulesContainerEl.appendChild(card);
   });
-
-  bindModuleEditorListeners();
 }
 
 function renderResultText(payload) {
@@ -1349,9 +1176,9 @@ function startExportImageStatusPolling(options = {}) {
         state.exportStatusPollTimer = window.setTimeout(poll, intervalMs);
       } else {
         state.exportStatusPollTimer = null;
-        if (!state.isSaving && !state.isExporting && !isDirty()) {
+        if (!state.isExporting) {
           if (status?.ready) {
-            updateSaveStatus("已保存，图片已就绪");
+            updateSaveStatus("图片已就绪");
           } else if (status?.error) {
             updateSaveStatus("图片生成失败");
           }
@@ -1382,7 +1209,7 @@ async function waitForExportImageReady(options = {}) {
       throw new Error(status.error || "图片生成失败");
     }
     if (status.missing) {
-      throw new Error("当前学生还没有可导出的已保存结果，请先保存。");
+      throw new Error("当前学生还没有可导出的 Agent 结果。");
     }
     if (Date.now() - startedAt >= timeoutMs) {
       throw new Error("图片仍在生成中，请稍后再试。");
@@ -1401,10 +1228,6 @@ async function fetchReadyExportImagePayload() {
     throw new Error("请先选择一位学生。");
   }
 
-  if (isDirty()) {
-    await saveCurrentStudent({ silentStatus: true });
-    ensureStudentUnchanged(studentId, "导出图片");
-  }
   await waitForExportImageReady({ studentId, priorityHigh: true, timeoutMs: 45000 });
   const response = await fetch(`/api/student/${encodeURIComponent(studentId)}/export-image`, {
     method: "POST",
@@ -1444,11 +1267,6 @@ async function regenerateCurrentExportImage() {
     return;
   }
 
-  if (isDirty()) {
-    await saveCurrentStudent({ silentStatus: true });
-    ensureStudentUnchanged(studentId, "重新生成图片");
-  }
-
   state.isExporting = true;
   setRegenerateButtonBusy(true, "重新生成中...");
   setExportButtonBusy(true, "导出图片");
@@ -1466,7 +1284,7 @@ async function regenerateCurrentExportImage() {
     startExportImageStatusPolling({ priorityHigh: true });
     await waitForExportImageReady({ studentId, priorityHigh: true, timeoutMs: 45000 });
     updateSaveStatus("图片已重新生成");
-    window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
+    window.setTimeout(() => updateSaveStatus("已加载"), 1800);
   } catch (error) {
     updateSaveStatus("重新生成失败");
     window.alert(error?.message || "重新生成失败");
@@ -1495,7 +1313,7 @@ async function exportAnnotationsAsImage() {
     const { fileName, blob } = await fetchReadyExportImagePayload();
     downloadBlob(blob, fileName);
     updateSaveStatus("已下载 PNG");
-    window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
+    window.setTimeout(() => updateSaveStatus("已加载"), 1800);
   } catch (error) {
     updateSaveStatus("导出失败");
     window.alert(error?.message || "导出失败");
@@ -1527,7 +1345,7 @@ async function copyAnnotationsImage() {
     const { blob } = await fetchReadyExportImagePayload();
     await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
     updateSaveStatus("图片已复制");
-    window.setTimeout(() => updateSaveStatus(isDirty() ? "未保存" : "已加载"), 1800);
+    window.setTimeout(() => updateSaveStatus("已加载"), 1800);
   } catch (error) {
     const message = String(error?.message || "");
     if (/NotAllowedError|focus/i.test(message)) {
@@ -1647,7 +1465,7 @@ function formatTaskStatus(task) {
 }
 
 function taskLabel(taskType) {
-  return taskType === "preprocess" ? "前处理" : "批改";
+  return taskType === "preprocess" ? "前处理" : "Agent 批改";
 }
 
 function taskCacheKey(taskType, weekId) {
@@ -1658,7 +1476,7 @@ function buildPipelineTaskCard(taskType, selectedWeek, latestTask) {
   const weekId = selectedWeek.id;
   const assignmentPath = `configs/assignments/${weekId}.json`;
   const isPreprocess = taskType === "preprocess";
-  const title = isPreprocess ? "run_preprocessing.py" : "run_batch_grading.py";
+  const title = isPreprocess ? "run_preprocessing.py" : "Agent 多阶段批改";
   const workersId = `${taskType}WorkersInput`;
   const flagId = `${taskType}FlagInput`;
   const runBtnId = `${taskType}RunBtn`;
@@ -1966,6 +1784,7 @@ function applyDashboardCardSizing() {
 async function configureApiKey() {
   let envName = "DASHSCOPE_API_KEY";
   let apiKey = "";
+  let hasApiKey = false;
   try {
     if (!state.subjectsLoaded) {
       await loadSubjectsJson();
@@ -1980,12 +1799,12 @@ async function configureApiKey() {
   try {
     const data = await fetchJson(`/api/apikey?env=${encodeURIComponent(envName)}`);
     envName = String(data.envName || envName).trim() || envName;
-    apiKey = String(data.apiKey || "");
+    hasApiKey = Boolean(data.hasApiKey);
   } catch (error) {
     setWeekManageStatus(`读取本地 API Key 失败：${error.message}`, "error");
   }
 
-  showApiKeyModal(envName, apiKey);
+  showApiKeyModal(envName, apiKey, hasApiKey);
   setWeekManageStatus(`已打开 API Key 配置：${envName}`);
 }
 
@@ -1998,7 +1817,7 @@ function escapeShellDoubleQuoted(value) {
   return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function fillApiKeyModalCommands(envName, apiKey) {
+function fillApiKeyModalCommands(envName, apiKey, hasApiKey = Boolean(apiKey)) {
   const keyValue = String(apiKey || "").trim() || "你的密钥";
   const escaped = escapeShellDoubleQuoted(keyValue);
   const linuxCommand = `export ${envName}="${escaped}"`;
@@ -2019,7 +1838,10 @@ function fillApiKeyModalCommands(envName, apiKey) {
     apiKeyInputEl.value = apiKey || "";
   }
   if (apiKeyStatusEl) {
-    setConfigStatus(apiKeyStatusEl, apiKey ? "已读取本地 API Key" : "尚未保存 API Key");
+    setConfigStatus(
+      apiKeyStatusEl,
+      apiKey ? "已读取本地 API Key" : hasApiKey ? "已保存 API Key（不会回显）" : "尚未保存 API Key",
+    );
   }
   if (apiCmdLinuxEl) {
     apiCmdLinuxEl.value = linuxCommand;
@@ -2032,11 +1854,11 @@ function fillApiKeyModalCommands(envName, apiKey) {
   }
 }
 
-function showApiKeyModal(envName, apiKey) {
+function showApiKeyModal(envName, apiKey, hasApiKey = Boolean(apiKey)) {
   if (!apiKeyModalEl) {
     return;
   }
-  fillApiKeyModalCommands(envName, apiKey);
+  fillApiKeyModalCommands(envName, apiKey, hasApiKey);
   apiKeyModalEl.classList.remove("is-hidden");
 }
 
@@ -2077,7 +1899,7 @@ async function saveApiKeyToLocal() {
       headers: { "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify({ envName, apiKey }),
     });
-    fillApiKeyModalCommands(envName, apiKey);
+    fillApiKeyModalCommands(envName, apiKey, true);
     setConfigStatus(apiKeyStatusEl, `已保存到 ${data.storePath || "configs/env/local.env"}`, "ok");
     setWeekManageStatus(`已保存 ${envName} 到本地环境文件`, "ok");
   } catch (error) {
@@ -2625,6 +2447,7 @@ async function activateSelectedWeek() {
 }
 
 async function openReviewView() {
+  switchView("review");
   try {
     await activateSelectedWeek();
   } catch (error) {
@@ -2634,17 +2457,9 @@ async function openReviewView() {
     updateSaveStatus("加载失败");
     return;
   }
-  switchView("review");
 }
 
 async function loadStudent(studentId, silent = false) {
-  if (!silent && isDirty()) {
-    const confirmed = window.confirm("当前批注尚未保存，确定切换学生吗？");
-    if (!confirmed) {
-      return;
-    }
-  }
-
   const loadToken = state.studentLoadToken + 1;
   state.studentLoadToken = loadToken;
   clearExportImageStatusPolling();
@@ -2654,16 +2469,12 @@ async function loadStudent(studentId, silent = false) {
   }
   const payload = normalizePayload(data.resultJson);
   state.currentStudentId = data.id;
-  state.originalPayload = canonicalizePayload({
-    student_name_or_id: payload.student_name_or_id,
-    overall: payload.overall,
-    modules: payload.modules,
-  });
-
+  state.currentReview = data.review || null;
   studentTitleEl.textContent = data.id;
   pageMetaEl.textContent = `${data.images.length} 页图片`;
-  renderImages(data.images);
+  renderImages(data.images, data.imageVariants || []);
   renderModules(payload);
+  renderReviewRiskPanel(state.currentReview);
   renderStudentList();
   const exportStatus = applyExportImageStatus(data.exportImage);
   fetchExportImageStatus(data.id, { priorityHigh: true, enqueue: true }).catch((error) => {
@@ -2682,57 +2493,6 @@ async function loadStudent(studentId, silent = false) {
   }
 }
 
-async function saveCurrentStudent(options = {}) {
-  const { silentStatus = false } = options;
-  const studentId = String(state.currentStudentId || "");
-  if (!studentId || state.isSaving) {
-    return null;
-  }
-
-  state.isSaving = true;
-  if (!silentStatus) {
-    updateSaveStatus("保存中...");
-  }
-  try {
-    const currentPayload = getCurrentPayloadFromUI();
-    const data = await fetchJson(`/api/student/${encodeURIComponent(studentId)}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        resultJson: currentPayload,
-        renderedText: renderResultText(currentPayload),
-      }),
-    });
-
-    const student = state.students.find((item) => item.id === studentId);
-    if (student) {
-      student.hasResult = Object.keys(currentPayload.modules || {}).length > 0;
-    }
-    renderStudentList();
-    if (studentId !== state.currentStudentId) {
-      return data;
-    }
-    state.originalPayload = canonicalizePayload(currentPayload);
-    const exportStatus = applyExportImageStatus(data.exportImage);
-    if (exportStatus?.queued || exportStatus?.rendering) {
-      updateSaveStatus("已保存，正在预生成图片...");
-      startExportImageStatusPolling({ priorityHigh: true });
-    } else if (!silentStatus) {
-      updateSaveStatus("已保存");
-    }
-    return data;
-  } catch (error) {
-    updateSaveStatus("保存失败");
-    if (!silentStatus) {
-      window.alert(error.message);
-    }
-    throw error;
-  } finally {
-    state.isSaving = false;
-  }
-}
 
 function moveStudent(offset) {
   if (!state.filteredStudents.length) {
@@ -2751,7 +2511,9 @@ function moveStudent(offset) {
 }
 
 studentSearchEl.addEventListener("input", renderStudentList);
-saveBtnEl.addEventListener("click", saveCurrentStudent);
+if (reviewFilterEl) {
+  reviewFilterEl.addEventListener("change", renderStudentList);
+}
 prevStudentBtnEl.addEventListener("click", () => moveStudent(-1));
 nextStudentBtnEl.addEventListener("click", () => moveStudent(1));
 if (regenerateImageBtnEl) {
@@ -2843,23 +2605,12 @@ if (apiKeyInputEl) {
   });
 }
 
+
+
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && apiKeyModalEl && !apiKeyModalEl.classList.contains("is-hidden")) {
     closeApiKeyModal();
-    return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-    event.preventDefault();
-    saveCurrentStudent();
-  }
-});
-
-window.addEventListener("beforeunload", (event) => {
-  if (!isDirty()) {
-    return;
-  }
-  event.preventDefault();
-  event.returnValue = "";
 });
 
 window.addEventListener("resize", () => {

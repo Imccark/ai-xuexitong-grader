@@ -1,7 +1,9 @@
 import argparse
 import concurrent.futures
 import io
+import os
 import shutil
+import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +11,8 @@ from pathlib import Path
 from PIL import Image
 
 from grade_evaluator import sanitize_filename
+from grading_graph.nodes.ingest import IngestLimits, _safe_member_name
+from grading_graph.nodes.image_quality import normalize_image_bytes
 from pdf_helper import pdf_to_images
 from project_config import load_runtime_config
 
@@ -86,21 +90,48 @@ def detect_kind(file_name: str, data: bytes) -> str | None:
         return None
 
 
-def collect_candidate_files(data: bytes, file_name: str, prefix: str = "") -> list[CandidateFile]:
+def collect_candidate_files(
+    data: bytes,
+    file_name: str,
+    prefix: str = "",
+    *,
+    limits: IngestLimits | None = None,
+    depth: int = 0,
+    counters: dict[str, int] | None = None,
+) -> list[CandidateFile]:
+    limits = limits or IngestLimits()
+    counters = counters or {"files": 0, "bytes": 0}
+    safe_file_name = _safe_member_name(file_name)
+    if len(data) > limits.max_member_bytes:
+        raise ValueError(f"member exceeds size limit: {safe_file_name}")
     kind = detect_kind(file_name, data)
-    relative_name = f"{prefix}{file_name}"
+    relative_name = f"{prefix}{safe_file_name}"
 
     if kind == "zip":
+        if depth >= limits.max_zip_depth:
+            raise ValueError("nested archive depth exceeds limit")
         collected: list[CandidateFile] = []
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             for member in archive.infolist():
                 if member.is_dir():
                     continue
+                member_name = _safe_member_name(member.filename)
+                if member.file_size > limits.max_member_bytes:
+                    raise ValueError(f"member exceeds size limit: {member_name}")
+                counters["files"] += 1
+                counters["bytes"] += member.file_size
+                if counters["files"] > limits.max_files:
+                    raise ValueError("file count exceeds limit")
+                if counters["bytes"] > limits.max_uncompressed_bytes:
+                    raise ValueError("uncompressed archive size exceeds limit")
                 collected.extend(
                     collect_candidate_files(
                         archive.read(member),
-                        Path(member.filename).name,
+                        member_name,
                         prefix=f"{relative_name}/",
+                        limits=limits,
+                        depth=depth + 1,
+                        counters=counters,
                     )
                 )
         return collected
@@ -112,10 +143,8 @@ def collect_candidate_files(data: bytes, file_name: str, prefix: str = "") -> li
 
 
 def convert_image_bytes_to_png(image_bytes: bytes, output_path: Path) -> None:
-    with Image.open(io.BytesIO(image_bytes)) as image:
-        if image.mode not in ("RGB", "L"):
-            image = image.convert("RGB")
-        image.save(output_path, format="PNG")
+    normalized_bytes, _metadata = normalize_image_bytes(image_bytes)
+    output_path.write_bytes(normalized_bytes)
 
 
 def clear_processed_pages(student_output_dir: Path) -> None:
@@ -125,13 +154,29 @@ def clear_processed_pages(student_output_dir: Path) -> None:
         path.unlink()
 
 
-def build_candidates_from_raw(raw_zip_path: Path) -> list[CandidateFile]:
-    collected: list[CandidateFile] = []
-    with zipfile.ZipFile(raw_zip_path) as outer:
-        for member in outer.infolist():
-            if member.is_dir():
-                continue
-            collected.extend(collect_candidate_files(outer.read(member), Path(member.filename).name))
+def commit_staged_pages(staged_dir: Path, target_dir: Path, backup_root: Path) -> Path | None:
+    """Atomically publish validated pages while retaining the previous directory."""
+    backup_dir: Path | None = None
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    if target_dir.exists():
+        backup_dir = backup_root / f"{target_dir.name}-{uuid.uuid4().hex}"
+        os.replace(target_dir, backup_dir)
+    try:
+        os.replace(staged_dir, target_dir)
+    except Exception:
+        if backup_dir is not None and not target_dir.exists():
+            os.replace(backup_dir, target_dir)
+        raise
+    return backup_dir
+
+
+def build_candidates_from_raw(raw_zip_path: Path, *, limits: IngestLimits | None = None) -> list[CandidateFile]:
+    collected = collect_candidate_files(
+        raw_zip_path.read_bytes(),
+        raw_zip_path.name,
+        limits=limits,
+    )
     collected.sort(key=lambda item: natural_sort_key(item.relative_name))
     return collected
 
@@ -141,6 +186,7 @@ def preprocess_one_student(
     processed_dir: Path,
     temp_root: Path,
     reprocess: bool,
+    backup_root: Path | None = None,
 ) -> StudentPreprocessResult:
     student_id = parse_student_id(raw_zip_path)
     student_output_dir = processed_dir / student_id
@@ -160,13 +206,12 @@ def preprocess_one_student(
             detail="未识别到可处理的 PDF 或图片文件",
         )
 
-    clear_processed_pages(student_output_dir)
-    student_output_dir.mkdir(parents=True, exist_ok=True)
-
     student_temp_dir = temp_root / student_id
     if student_temp_dir.exists():
         shutil.rmtree(student_temp_dir)
     student_temp_dir.mkdir(parents=True, exist_ok=True)
+    staged_pages_dir = student_temp_dir / "pages"
+    staged_pages_dir.mkdir(parents=True, exist_ok=True)
 
     page_index = 1
     try:
@@ -179,11 +224,11 @@ def preprocess_one_student(
                 if not generated_paths:
                     raise RuntimeError(f"PDF 转图失败：{candidate.relative_name}")
                 for generated_path in sorted(generated_paths, key=natural_sort_key):
-                    target_path = student_output_dir / f"page_{page_index}.png"
-                    shutil.move(generated_path, target_path)
+                    target_path = staged_pages_dir / f"page_{page_index}.png"
+                    convert_image_bytes_to_png(Path(generated_path).read_bytes(), target_path)
                     page_index += 1
             elif candidate.kind == "image":
-                target_path = student_output_dir / f"page_{page_index}.png"
+                target_path = staged_pages_dir / f"page_{page_index}.png"
                 convert_image_bytes_to_png(candidate.data, target_path)
                 page_index += 1
 
@@ -191,10 +236,18 @@ def preprocess_one_student(
         if page_count == 0:
             raise RuntimeError("未生成任何标准化图片")
 
+        for page_path in staged_pages_dir.glob("page_*.png"):
+            with Image.open(page_path) as image:
+                image.verify()
+        commit_staged_pages(
+            staged_pages_dir,
+            student_output_dir,
+            backup_root or (temp_root.parent / "preprocess_backups"),
+        )
+
         print(f"[OK] {student_id} | {page_count} 页")
         return StudentPreprocessResult(student_id=student_id, status="success", page_count=page_count)
     except Exception as exc:
-        clear_processed_pages(student_output_dir)
         print(f"[FAIL] {student_id} | {exc}")
         return StudentPreprocessResult(
             student_id=student_id,
@@ -240,6 +293,7 @@ def main() -> int:
     raw_dir = runtime_config.raw_submissions_dir
     processed_dir = runtime_config.processed_images_dir
     temp_root = week_dir / "temp_workspace" / "preprocess"
+    backup_root = week_dir / "temp_workspace" / "preprocess_backups"
     summary_path = runtime_config.preprocess_summary_path
 
     if not week_dir.is_dir():
@@ -262,7 +316,7 @@ def main() -> int:
     results: list[StudentPreprocessResult] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         future_map = {
-            executor.submit(preprocess_one_student, raw_zip_path, processed_dir, temp_root, args.reprocess): raw_zip_path
+            executor.submit(preprocess_one_student, raw_zip_path, processed_dir, temp_root, args.reprocess, backup_root): raw_zip_path
             for raw_zip_path in raw_zip_paths
         }
         for future in concurrent.futures.as_completed(future_map):

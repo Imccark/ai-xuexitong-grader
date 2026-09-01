@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-xuexitong-grader-clean"
+version = "1.0.0"
+description = "AI 学习通作业批改助手"
+requires-python = ">=3.13"
+dependencies = [
+  "openai",
+  "PyMuPDF",
+  "Pillow",
+  "langgraph",
+  "langgraph-checkpoint-sqlite",
+  "aiosqlite",
+  "opencv-python",
+  "numpy",
+  "scikit-image",
+  "ImageHash",
+  "sympy",
+  "python-docx",
+  "pytest",
+  "pytest-asyncio",
+]
+
+[project.optional-dependencies]
+orientation = [
+  "onnxruntime>=1.23",
+]
+layout = [
+  "onnxruntime>=1.23,<2",
+  "paddleocr>=3.3,<4",
+  "paddlepaddle>=3.2,<4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra -p no:cacheprovider"
+markers = [
+  "online: requires explicit online provider access",
+]
+
+[tool.setuptools.packages.find]
+include = ["evaluation*", "grading_graph*"]

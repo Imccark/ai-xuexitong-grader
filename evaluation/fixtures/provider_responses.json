@@ -1,0 +1,8 @@
+{
+  "text": "fake-text-response",
+  "image": "fake-image-response",
+  "json": {
+    "ok": true,
+    "provider": "fake"
+  }
+}

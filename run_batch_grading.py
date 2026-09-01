@@ -3,6 +3,8 @@ import concurrent.futures
 import json
 import os
 import re
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +14,9 @@ from grade_evaluator import (
     sanitize_filename,
     write_failure_result,
 )
+from grading_graph.adapters.batch import candidate_has_provider_error, run_candidate_states, run_student_candidate_from_images
+from grading_graph.provider import DASHSCOPE_API_KEY_ENV, DashScopeOpenAIProvider
+from grading_graph.schemas import Budget
 from project_config import LOCAL_ENV_FILE, load_runtime_config, resolve_api_key
 
 
@@ -166,11 +171,16 @@ def parse_result_text(result_text: str, output_format: str) -> dict:
     }
 
 
+def build_result_txt_reference(result_path: Path) -> str:
+    """Return a portable reference relative to the sibling result JSON file."""
+    return result_path.name
+
+
 def write_result_json(result_path: Path, subject_config) -> Path:
     result_text = result_path.read_text(encoding="utf-8", errors="ignore")
     parsed = parse_result_text(result_text, subject_config.output_format)
     payload = {
-        "result_txt": str(result_path),
+        "result_txt": build_result_txt_reference(result_path),
         "parsed_with_output_format": True,
         **parsed,
     }
@@ -195,7 +205,7 @@ def generate_structured_results(student_dirs: list[Path], results_dir: Path, sub
             print(f"[JSON] {student_id} -> {json_path.name}")
         except Exception as exc:
             failed_count += 1
-            print(f"[WARN] JSON 生成失败: {student_id} | {exc}")
+            print(f"[WARN] JSON 生成失败: {student_id} | {type(exc).__name__}")
     return success_count, failed_count
 
 
@@ -204,6 +214,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--week", help="周目录，例如：第一周；如果仓库里只有一个 assignment，可省略")
     parser.add_argument("--assignment", help="assignment 配置文件路径；如果仓库里只有一个 assignment，可省略")
     parser.add_argument("--max-workers", type=int, default=4, help="最大并发数，默认 4")
+    parser.add_argument("--max-students", type=int, default=None, help="candidate 在线运行必须显式设置的正整数样本数")
+    parser.add_argument("--max-calls", type=int, default=None, help="candidate 在线运行的每名学生最大模型调用数")
+    parser.add_argument("--max-input-tokens", type=int, default=None, help="candidate 在线运行的每名学生最大输入 token 数")
+    parser.add_argument("--max-output-tokens", type=int, default=None, help="candidate 在线运行的每名学生最大输出 token 数")
     parser.add_argument(
         "--regrade",
         "--retry-failed",
@@ -218,7 +232,205 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="手动指定标准答案路径；默认使用 assignment 配置中的 answer_key",
     )
+    parser.add_argument(
+        "--engine",
+        choices=["auto", "legacy", "candidate"],
+        default="auto",
+        help="批改引擎；auto 使用 configs/agent_pipeline.json 当前正式结果源",
+    )
+    parser.add_argument(
+        "--graph-input-jsonl",
+        default=None,
+        help="Agent 引擎可选的已准备 Graph state JSONL；省略时从 processed_images 准备",
+    )
+    parser.add_argument("--answer-manifest", default=None, help="candidate 引擎可选的已编译 answer manifest 路径")
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=None,
+        help="candidate 引擎的 SQLite checkpoint 目录，默认写入周目录 agent_artifacts/_checkpoints",
+    )
+    parser.add_argument("--cache-dir", default=None, help="candidate 引擎的 provider response cache 目录")
+    parser.add_argument(
+        "--online",
+        action="store_true",
+        help=f"candidate 引擎显式允许使用 {DASHSCOPE_API_KEY_ENV}；默认拒绝在线调用",
+    )
     return parser.parse_args()
+
+
+def load_agent_pipeline_config() -> dict:
+    config_path = Path(__file__).resolve().parent / "configs" / "agent_pipeline.json"
+    try:
+        value = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Agent pipeline 配置不可读取：{config_path}") from exc
+    if not isinstance(value, dict):
+        raise SystemExit(f"Agent pipeline 配置必须是 JSON object：{config_path}")
+    return value
+
+
+def read_graph_input_jsonl(path: Path) -> list[dict]:
+    states: list[dict] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise SystemExit(f"Graph input JSONL 不可读取：{path}") from exc
+    for line_number, raw_line in enumerate(lines, 1):
+        if not raw_line.strip():
+            continue
+        try:
+            value = json.loads(raw_line)
+        except ValueError as exc:
+            raise SystemExit(f"Graph input JSONL 第 {line_number} 行不是合法 JSON") from exc
+        if not isinstance(value, dict):
+            raise SystemExit(f"Graph input JSONL 第 {line_number} 行必须是 object")
+        missing = [key for key in ("run_id", "assignment_id", "student_id", "question_jobs") if not value.get(key)]
+        if missing:
+            raise SystemExit(f"Graph input JSONL 第 {line_number} 行缺少字段：{', '.join(missing)}")
+        states.append(value)
+    return states
+
+
+def apply_candidate_budget_overrides(states: list[dict], args: argparse.Namespace) -> list[dict]:
+    overrides = {
+        "max_calls": args.max_calls,
+        "max_input_tokens": args.max_input_tokens,
+        "max_output_tokens": args.max_output_tokens,
+    }
+    return [
+        {
+            **state,
+            "budget": {
+                **dict(state.get("budget") or {}),
+                **{key: value for key, value in overrides.items() if value is not None},
+            },
+        }
+        for state in states
+    ]
+
+
+def run_candidate_engine(args: argparse.Namespace, runtime_config) -> int:
+    if not args.online:
+        raise SystemExit("candidate 引擎需要显式 --online；未执行任何模型调用")
+    if args.max_students is None or args.max_students <= 0:
+        raise SystemExit("candidate 在线运行必须显式设置 --max-students > 0；未执行任何模型调用")
+    missing_budget_flags = [
+        flag for flag, value in (
+            ("--max-calls", args.max_calls),
+            ("--max-input-tokens", args.max_input_tokens),
+            ("--max-output-tokens", args.max_output_tokens),
+        ) if value is None
+    ]
+    if missing_budget_flags:
+        raise SystemExit(
+            "candidate 在线运行必须显式设置 "
+            + ", ".join(missing_budget_flags)
+            + "；未执行任何模型调用"
+        )
+    if args.max_calls <= 0 or args.max_input_tokens <= 0 or args.max_output_tokens <= 0:
+        raise SystemExit("candidate 在线预算必须大于 0；未执行任何模型调用")
+    api_key, api_key_source = resolve_api_key(DASHSCOPE_API_KEY_ENV)
+    if not api_key:
+        raise SystemExit(f"缺失 API Key：{DASHSCOPE_API_KEY_ENV}；未执行任何模型调用")
+    os.environ[DASHSCOPE_API_KEY_ENV] = api_key
+    source_desc = "系统环境变量" if api_key_source == "process_env" else "本地环境文件"
+    print(f"[API_KEY] 已加载 {DASHSCOPE_API_KEY_ENV}（来源：{source_desc}）")
+    pipeline_config = load_agent_pipeline_config()
+    budget_config = dict(pipeline_config.get("budgets", {}))
+    budget_config.update(
+        {
+            "max_calls_per_student": args.max_calls,
+            "max_input_tokens": args.max_input_tokens,
+            "max_output_tokens": args.max_output_tokens,
+        }
+    )
+    output_limit = int(budget_config.get("max_output_tokens", 10000))
+    provider = DashScopeOpenAIProvider.from_environment(max_output_tokens=output_limit)
+    checkpoint_dir = Path(args.checkpoint_dir).resolve() if args.checkpoint_dir else runtime_config.week_dir / "agent_artifacts" / "_checkpoints"
+    cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else runtime_config.week_dir / "agent_artifacts" / "_cache"
+    if args.graph_input_jsonl:
+        graph_input_path = Path(args.graph_input_jsonl).resolve()
+        if not graph_input_path.is_file():
+            raise SystemExit(f"Graph input JSONL 不存在：{graph_input_path}")
+        states = apply_candidate_budget_overrides(read_graph_input_jsonl(graph_input_path), args)
+        summary = run_candidate_states(
+            provider=provider,
+            states=states,
+            artifact_root=runtime_config.week_dir,
+            checkpoint_dir=checkpoint_dir,
+            cache_dir=cache_dir,
+            max_students=args.max_students,
+        )
+        print(json.dumps(summary.__dict__, ensure_ascii=False))
+        return 1 if summary.failed or summary.stop_reason else 0
+
+    processed_dir = runtime_config.processed_images_dir
+    if not processed_dir.is_dir():
+        raise SystemExit(f"标准化图片目录不存在：{processed_dir}")
+    manifest_path = (
+        Path(args.answer_manifest).resolve()
+        if args.answer_manifest
+        else Path(__file__).resolve().parent / "evaluation" / "answer_manifests" / runtime_config.week_name / "manifest.json"
+    )
+    if not manifest_path.is_file():
+        raise SystemExit(f"candidate 引擎需要已编译 answer manifest：{manifest_path}")
+    budget = Budget(
+        max_calls=int(budget_config.get("max_calls_per_student", 20)),
+        max_input_tokens=int(budget_config.get("max_input_tokens", 50000)),
+        max_output_tokens=int(budget_config.get("max_output_tokens", 10000)),
+        max_image_pixels=int(budget_config.get("max_image_pixels", 120000000)),
+        max_cost=float(budget_config.get("max_cost", 0)),
+    )
+    student_dirs = sorted(path for path in processed_dir.iterdir() if path.is_dir())
+    if args.max_students:
+        student_dirs = student_dirs[:args.max_students]
+    succeeded = failed = 0
+    consecutive_provider_errors = 0
+    stop_reason = None
+    # A regrade must bypass any candidate persisted by an earlier attempt.
+    # Keep stable runs idempotent, while making each explicit regrade a fresh
+    # graph execution (and still reusing the content-addressed response cache).
+    regrade_suffix = f"rerun-{time.time_ns()}" if args.regrade else "stable"
+    for student_dir in student_dirs:
+        student_id = sanitize_filename(student_dir.name)
+        run_id = f"candidate-{runtime_config.assignment_id}-{student_id}-{regrade_suffix}"
+        try:
+            candidate = run_student_candidate_from_images(
+                provider=provider,
+                processed_student_dir=student_dir,
+                answer_manifest_path=manifest_path,
+                artifact_root=runtime_config.week_dir,
+                assignment_id=runtime_config.assignment_id,
+                student_id=student_id,
+                run_id=run_id,
+                budget=budget,
+                checkpoint_path=checkpoint_dir / "grading-images.sqlite",
+                cache_dir=cache_dir,
+                local_layout_config=dict(pipeline_config.get("local_layout") or {}),
+            )
+            succeeded += 1
+            if candidate_has_provider_error(candidate):
+                consecutive_provider_errors += 1
+            else:
+                consecutive_provider_errors = 0
+            if consecutive_provider_errors >= 3:
+                stop_reason = "three_consecutive_provider_errors"
+                print(f"[STOP] {stop_reason}", file=sys.stderr)
+                break
+        except Exception as exc:
+            failed += 1
+            print(f"[CANDIDATE_FAILED] {student_id} | {type(exc).__name__}", file=sys.stderr)
+            if type(exc).__name__.endswith("ProviderError") or type(exc).__name__ in {"TimeoutError", "ConnectionError"}:
+                consecutive_provider_errors += 1
+                if consecutive_provider_errors >= 3:
+                    stop_reason = "three_consecutive_provider_errors"
+                    print(f"[STOP] {stop_reason}", file=sys.stderr)
+                    break
+            else:
+                consecutive_provider_errors = 0
+    summary = {"processed": succeeded + failed, "succeeded": succeeded, "failed": failed, "stop_reason": stop_reason}
+    print(json.dumps(summary, ensure_ascii=False))
+    return 1 if failed or stop_reason else 0
 
 
 def get_page_images(student_dir: Path) -> list[str]:
@@ -338,6 +550,14 @@ def main() -> int:
     except ValueError as exc:
         raise SystemExit(str(exc))
     week_dir = runtime_config.week_dir
+    pipeline_config = load_agent_pipeline_config()
+    engine = args.engine
+    if engine == "auto":
+        engine = str(pipeline_config.get("feature_flag") or "legacy")
+    if engine == "candidate":
+        if not week_dir.is_dir():
+            raise SystemExit(f"周目录不存在：{week_dir}")
+        return run_candidate_engine(args, runtime_config)
     tex_path = Path(args.answer_key).resolve() if args.answer_key else runtime_config.answer_key_path
     processed_dir = runtime_config.processed_images_dir
     results_dir = runtime_config.results_dir
@@ -391,7 +611,7 @@ def main() -> int:
             try:
                 task_results.append(future.result())
             except Exception as exc:
-                error = f"批量任务异常：{exc}"
+                error = f"批量任务异常：{type(exc).__name__}"
                 write_failure_result(
                     student_name=student_id,
                     output_dir=str(results_dir),

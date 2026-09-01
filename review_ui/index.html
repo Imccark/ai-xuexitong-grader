@@ -18,7 +18,7 @@
             <p id="weekCount" class="muted"></p>
             <div class="nav-tabs">
               <button class="nav-tab" data-view="dashboard" type="button">控制台</button>
-              <button class="nav-tab is-active" data-view="review" type="button">批阅</button>
+              <button class="nav-tab is-active" data-view="review" type="button">Agent 结果</button>
             </div>
           </div>
           <div id="weekSelector" class="week-selector">
@@ -65,7 +65,7 @@
                 </div>
               </article>
               <article class="dashboard-card dashboard-summary-card" id="cardGradingTask">
-                <h3>批改任务</h3>
+                <h3>Agent 批改任务</h3>
                 <div class="dashboard-card-content dashboard-summary-content" id="gradingTaskCardContent">
                   <p class="dashboard-stat-placeholder">先在左侧选中一周</p>
                 </div>
@@ -219,16 +219,24 @@
       <aside class="sidebar">
         <div class="sidebar-header">
           <button id="toggleSidebarBtn" class="sidebar-toggle-btn" type="button" title="隐藏左栏" aria-label="隐藏左栏">◀</button>
-          <p class="eyebrow">Homework Review</p>
-          <h1>作业审阅台</h1>
+          <p class="eyebrow">Agent Results</p>
+          <h1>Agent 批阅结果</h1>
           <p id="studentCount" class="muted">加载中...</p>
           <div class="nav-tabs">
             <button class="nav-tab" data-view="dashboard" type="button">控制台</button>
-            <button class="nav-tab is-active" data-view="review" type="button">批阅</button>
+            <button class="nav-tab is-active" data-view="review" type="button">Agent 结果</button>
           </div>
         </div>
         <div class="toolbar">
           <input id="studentSearch" type="search" placeholder="搜索学号或姓名" />
+          <select id="reviewFilter" aria-label="Agent 状态筛选">
+            <option value="all">全部 Agent 状态</option>
+            <option value="review_required">Agent 未完全收敛</option>
+            <option value="candidate_ready">Agent 已完成</option>
+            <option value="unreadable">图片不可辨认</option>
+            <option value="reference_mismatch">题目版本不匹配</option>
+            <option value="pending">未批改</option>
+          </select>
         </div>
         <div id="studentList" class="student-list"></div>
       </aside>
@@ -252,21 +260,22 @@
         <section class="editor-panel">
           <div class="panel-header">
             <div>
-              <p class="eyebrow">Evaluation</p>
-              <h2>批注编辑</h2>
+              <p class="eyebrow">Agent Evaluation</p>
+              <h2>批阅结论（只读）</h2>
             </div>
             <div class="status-actions">
               <button id="regenerateImageBtn" class="export-image-btn" type="button">重新生成图片</button>
               <button id="copyImageBtn" class="export-image-btn" type="button">复制图片</button>
               <button id="exportImageBtn" class="export-image-btn" type="button">导出图片</button>
-              <div id="saveStatus" class="save-status">未保存</div>
+              <div id="saveStatus" class="save-status">只读结果</div>
             </div>
           </div>
+
+          <div id="reviewRiskPanel" class="review-risk-panel" aria-live="polite"></div>
 
           <div class="editor-actions">
             <button id="prevStudentBtn" type="button">上一位</button>
             <button id="nextStudentBtn" type="button">下一位</button>
-            <button id="saveBtn" class="primary" type="button">保存</button>
           </div>
 
           <div id="modulesContainer" class="modules-container">

@@ -965,6 +965,16 @@ input {
   background: rgba(255, 255, 255, 0.8);
 }
 
+.toolbar select {
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--text);
+}
+
 .student-list {
   overflow: auto;
   display: flex;
@@ -1053,6 +1063,111 @@ input {
   padding: 24px 24px 10px;
 }
 
+.review-risk-panel {
+  margin: 0 24px 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(200, 92, 47, 0.2);
+  border-radius: 18px;
+  background: rgba(255, 248, 240, 0.72);
+  max-height: 245px;
+  overflow: auto;
+}
+
+.review-risk-header,
+.review-risk-item-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.review-risk-header span,
+.review-risk-item-title span,
+.review-risk-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-risk-header .config-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.review-readonly-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid rgba(31, 111, 139, 0.24);
+  border-radius: 999px;
+  background: rgba(31, 111, 139, 0.08);
+  color: #1f6f8b;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.review-risk-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.review-risk-item {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.review-risk-item.is-risk {
+  border-color: rgba(200, 92, 47, 0.38);
+}
+
+.review-evidence-list,
+.review-risk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.review-result-details {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.evidence-link,
+.review-risk-actions .config-btn,
+.review-risk-actions select,
+.review-risk-actions input {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.review-verdict-select,
+.review-transcription-input {
+  max-width: 180px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text);
+}
+
+.evidence-link {
+  color: var(--accent-strong);
+  background: rgba(200, 92, 47, 0.06);
+}
+
+.image-card.evidence-focus {
+  outline: 3px solid rgba(200, 92, 47, 0.7);
+  outline-offset: 3px;
+}
+
 .status-actions {
   display: flex;
   align-items: center;
@@ -1079,6 +1194,7 @@ input {
 }
 
 .image-card {
+  position: relative;
   background: var(--panel-strong);
   border: 1px solid var(--line);
   border-radius: 22px;
@@ -1096,6 +1212,43 @@ input {
   display: block;
   border-radius: 16px;
   background: #fff;
+}
+
+.image-view-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin: -4px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.image-view-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.image-view-select {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #fff;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.evidence-bbox {
+  position: absolute;
+  display: none;
+  border: 3px solid rgba(200, 92, 47, 0.9);
+  border-radius: 6px;
+  box-shadow: 0 0 0 3px rgba(255, 248, 240, 0.8);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.evidence-bbox.is-visible {
+  display: block;
 }
 
 .editor-actions {
@@ -1153,41 +1306,36 @@ button.primary {
   margin: 0;
 }
 
-.module-add-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  padding: 0;
-  display: inline-grid;
-  place-items: center;
-  font-size: 20px;
-  line-height: 1;
-  background: rgba(200, 92, 47, 0.12);
-  border-color: rgba(200, 92, 47, 0.3);
-  color: var(--accent-strong);
-  font-weight: 600;
-  margin-right: -2px;
+.readonly-field {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-soft);
 }
 
-.field-block {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.readonly-field:last-child {
+  border-bottom: 0;
 }
 
-.field-block + .field-block {
-  margin-top: 10px;
+.readonly-field span {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
-.field-block span,
-.item-order,
-.question-groups-title {
+.readonly-field strong {
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.readonly-item-row {
+  align-items: flex-start;
+}
+
+.item-order {
   font-size: 12px;
   color: var(--muted);
 }
 
-.field-block input,
-.item-row textarea,
 .item-preview {
   width: 100%;
   border: 1px solid var(--line);
@@ -1204,17 +1352,8 @@ button.primary {
   align-items: start;
 }
 
-.item-row-editable {
-  position: relative;
-  padding-right: 52px;
-}
-
 .item-row + .item-row {
   margin-top: 8px;
-}
-
-.item-content {
-  min-width: 0;
 }
 
 .item-preview {
@@ -1284,61 +1423,6 @@ button.primary {
 .item-preview span,
 .item-preview code {
   line-height: inherit;
-}
-
-.item-row textarea {
-  resize: none;
-  overflow: hidden;
-  min-height: 48px;
-}
-
-.item-row textarea.is-hidden,
-.item-preview.is-hidden {
-  display: none;
-}
-
-.item-actions {
-  position: absolute;
-  top: 8px;
-  right: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.item-edit-btn,
-.item-delete-btn {
-  width: 32px;
-  height: 28px;
-  border-radius: 8px;
-  padding: 0;
-  display: inline-grid;
-  place-items: center;
-  font-size: 15px;
-  line-height: 1;
-  font-weight: 700;
-}
-
-.item-edit-btn {
-  background: rgba(200, 92, 47, 0.12);
-  border-color: rgba(200, 92, 47, 0.3);
-  color: var(--accent-strong);
-}
-
-.item-delete-btn {
-  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-  border-color: transparent;
-  color: #fff;
-}
-
-.question-groups {
-  margin-top: 10px;
-  border-top: 1px dashed var(--line);
-  padding-top: 10px;
-}
-
-.question-groups-title {
-  margin: 0 0 8px;
 }
 
 .question-chip-wrap {
@@ -1655,6 +1739,7 @@ button.primary {
   cursor: text;
 }
 
+
 @media (max-width: 1080px) {
   body {
     height: auto;
@@ -1719,6 +1804,7 @@ button.primary {
   .api-key-cmd-grid {
     grid-template-columns: 1fr;
   }
+
 }
 
 @media (min-width: 1180px) and (orientation: landscape) {

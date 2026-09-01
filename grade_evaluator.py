@@ -143,6 +143,11 @@ def write_failure_result(
     return result_path
 
 
+def safe_exception_type(prefix: str, exc: BaseException) -> str:
+    """Return a diagnostic that cannot echo provider credentials or payloads."""
+    return f"{prefix}{type(exc).__name__}"
+
+
 def load_standard_answer(tex_path: str) -> str:
     with open(tex_path, "r", encoding="utf-8") as f:
         return f.read()
@@ -260,7 +265,11 @@ def evaluate_homework_qwen_vision(
         reasoning_chunks = []
 
         for chunk in completion:
-            delta = chunk.choices[0].delta
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+
+            delta = choices[0].delta
 
             if hasattr(delta, "reasoning_content") and delta.reasoning_content is not None:
                 if show_reasoning:
@@ -301,7 +310,7 @@ def evaluate_homework_qwen_vision(
             student_name,
             resolved_output_dir,
             "判卷脚本调用失败，需人工复核",
-            [f"接口调用失败：{str(e)}"],
+            [safe_exception_type("接口调用失败：", e)],
             ["请检查接口配置、网络状态和输入文件后重新处理。"],
         )
         print(f"[ERROR] {student_name} 批改失败")

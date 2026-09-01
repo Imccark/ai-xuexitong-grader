@@ -1,3 +1,23 @@
 openai
 PyMuPDF
 Pillow
+
+# LangGraph workflow and local durable checkpoints
+langgraph
+langgraph-checkpoint-sqlite
+aiosqlite
+
+# Image quality, preprocessing, and deterministic math checks
+opencv-python
+onnxruntime
+numpy
+scikit-image
+ImageHash
+sympy
+
+# Explicit DOCX ingestion
+python-docx
+
+# Async graph tests
+pytest
+pytest-asyncio

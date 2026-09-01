@@ -1,0 +1,132 @@
+{
+  "schema_version": "1.0",
+  "graph_version": "langgraph-v3-evidence-first",
+  "feature_flag": "candidate",
+  "shadow": {
+    "enabled": false,
+    "candidate_only": false,
+    "formal_result_source": "candidate",
+    "auto_submit": false
+  },
+  "review_ui": {
+    "mode": "agent_read_only",
+    "manual_scoring_enabled": false,
+    "manual_gold_enabled": false
+  },
+  "provider": {
+    "name": "dashscope-openai-compatible",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.7-plus",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "invalid_proxy_sentinel": "ignore_only_loopback_port_9",
+    "honor_real_system_proxies": true
+  },
+  "langsmith": {
+    "enabled": false
+  },
+  "artifacts": {
+    "directory_name": "agent_artifacts",
+    "checkpoint_filename": "grading_checkpoints.sqlite"
+  },
+  "local_layout": {
+    "enabled": true,
+    "backend": "paddleocr",
+    "model_name": "PP-DocLayoutV3",
+    "model_dir": "models/document_layout/PP-DocLayoutV3",
+    "engine": "onnxruntime",
+    "allow_model_download": false,
+    "min_region_confidence": 0.48,
+    "min_question_label_confidence": 0.65,
+    "min_region_area_ratio": 0.002,
+    "max_sibling_overlap_ratio": 0.85,
+    "merge_default_regions": true,
+    "merge_gap_height_multiplier": 1.5,
+    "merge_gap_min_page_ratio": 0.018,
+    "merge_gap_max_page_ratio": 0.08,
+    "merge_horizontal_padding_ratio": 0.035,
+    "merge_vertical_padding_ratio": 0.025,
+    "question_id_ocr_enabled": true,
+    "ocr_language": "ch",
+    "ocr_det_model_name": "PP-OCRv5_mobile_det",
+    "ocr_rec_model_name": "PP-OCRv5_mobile_rec",
+    "ocr_det_model_dir": "models/ocr/PP-OCRv5_mobile_det",
+    "ocr_rec_model_dir": "models/ocr/PP-OCRv5_mobile_rec",
+    "ocr_left_strip_ratio": 0.45,
+    "ocr_text_det_limit_side_len": 736,
+    "ocr_enable_mkldnn": false,
+    "fallback": "online_page_observer",
+    "label_map": {
+      "question_block": "question_block",
+      "subquestion": "subquestion",
+      "student_answer": "student_answer",
+      "cross_page_continuation": "cross_page_continuation",
+      "identity": "identity",
+      "header_footer": "header_footer",
+      "unknown": "unknown"
+    }
+  },
+  "budgets": {
+    "max_calls_per_student": 60,
+    "max_input_tokens": 250000,
+    "max_output_tokens": 50000,
+    "max_image_pixels": 120000000,
+    "max_cost": 0
+  },
+  "retry": {
+    "max_attempts": 2,
+    "transient_status_codes": [429, 500, 502, 503, 504]
+  },
+  "agent_loop": {
+    "evidence_registry": true,
+    "coverage_gate": true,
+    "rescue_image_only_questions": true,
+    "page_observer_failure_policy": "bounded_full_page_warning",
+    "full_page_rescue_max_images": 4,
+    "answer_blind_question_locator": true,
+    "cross_page_continuation_reassignment": true,
+    "semantic_evidence_compatibility_gate": true,
+    "per_span_neighbor_evidence_filter": true,
+    "empty_reason_verifier_downgrade_blocked": true,
+    "provider_error_is_not_unreadable": true,
+    "stop_when_all_fresh_questions_hit_provider_errors": true,
+    "atomic_rubric_compiler": true,
+    "missing_rubric_retry_max": 2,
+    "rref_atomic_subcriteria": true,
+    "reference_method_is_not_automatically_required": true,
+    "equivalent_solution_methods_receive_full_credit": true,
+    "context_complete_linear_combination_shorthand": true,
+    "cache_hits_bypass_paid_call_budget": true,
+    "deterministic_question_aggregation": true,
+    "grader": "qwen_question_grader",
+    "risk_critic": "evidence_and_symbol_verifier",
+    "verifier_scope": "contradicted_atomic_rubrics_only",
+    "max_verification_rounds": 2,
+    "allow_evidence_backed_auto_correction": true,
+    "require_original_image_for_visual_disputes": true,
+    "negative_sign_recheck": true,
+    "max_symbol_audits_per_question": 1,
+    "symbol_audit_rounds": 1,
+    "symbol_audit_failure_policy": "discard_untrusted_text_use_original_image",
+    "symbol_audit_input": "upscaled_normalized_and_enhanced_span_crops",
+    "incomplete_subparts_rescue": "all_pages_locator_crop_plus_full_page_context",
+    "self_contradictory_correct_reason_policy": "deterministic_partial",
+    "ambiguous_locator_max_regions": 4
+  },
+  "evaluation": {
+    "reference_source": "independent_multimodal_model_judge",
+    "manual_gold_required": false,
+    "judge_provider": "codex-chatgpt-work",
+    "judge_runtime": "current_codex_or_chatgpt_work_task",
+    "requires_api_key": false,
+    "packet_root": "evaluation/codex_judge_packets",
+    "passes": ["blind_independent", "adversarial_critic", "final_adjudicator"],
+    "confidence_threshold": 0.8,
+    "max_images_per_question": 4,
+    "disputed_policy": "exclude_from_score_and_keep_for_optional_review",
+    "optional_api_fallback": {
+      "provider": "openai-responses",
+      "model": "gpt-5.6",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  }
+}

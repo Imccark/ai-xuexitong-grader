@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+.venv/
 node_modules/
 
 # Local week data and generated artifacts
@@ -10,10 +11,20 @@ node_modules/
 */summary.txt
 */preprocess_summary.txt
 */answer.tex
-*/answer.aux
-*/answer.log
-*/answer.out
 */answer.pdf
+
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.toc
+*.xdv
+*.synctex.gz
+answer.log
+*/answer.log
+missfont.log
+*/missfont.log
 
 # OS/editor noise
 .DS_Store
@@ -24,3 +35,40 @@ configs/env/local.env
 configs/env/review_ui_settings.json
 runtime_logs/
 第二周/
+
+# Local datasets and generated evaluation artifacts (may contain student data)
+datasets/
+*/agent_artifacts/
+*/原题工作区/
+evaluation/layout_labels/
+evaluation/codex_judge_packets/
+evaluation/answer_manifests/
+evaluation/reports/
+evaluation/qwen_eval_cache*/
+evaluation/qwen_eval*.log
+evaluation/model_judgments*.jsonl
+evaluation/*_dry_run.json
+evaluation/image_memory_probe.json
+evaluation/baseline_report.json
+evaluation/current_metrics.json
+evaluation/model_judge_metrics.json
+evaluation/dataset.jsonl
+evaluation/*_gold.jsonl
+evaluation/historical_results_sha256.jsonl
+
+# Local history, test runs, and build metadata
+archive/local/
+temp/
+.tmp/
+test-results/
+.pytest-*/
+pytest-*/
+.uv-cache-*/
+*.egg-info/
+review_app.audit*.log
+.claude/
+
+# Locally deployed PaddleOCR/PaddleX weights (downloaded, not versioned)
+models/document_layout/PP-DocLayoutV3/
+models/ocr/PP-OCRv5_mobile_det/
+models/ocr/PP-OCRv5_mobile_rec/

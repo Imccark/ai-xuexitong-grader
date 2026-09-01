@@ -1,0 +1,11 @@
+{
+  "assignment_id": "第五周",
+  "week_name": "第五周",
+  "week_dir": "../../第五周",
+  "answer_key": "../../第五周/answer.tex",
+  "raw_submissions_dir": "../../第五周/raw_submissions",
+  "processed_images_dir": "../../第五周/processed_images",
+  "results_dir": "../../第五周/results",
+  "preprocess_summary": "../../第五周/preprocess_summary.txt",
+  "grading_summary": "../../第五周/summary.txt"
+}

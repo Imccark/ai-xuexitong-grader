@@ -226,6 +226,28 @@ def load_runtime_config(assignment: str | None = None, week: str | None = None) 
     if assignment:
         return load_assignment_config(Path(assignment))
     if week:
+        # ``--week`` is the user-facing shorthand, but a configured assignment
+        # may carry a different internal id (for example ``第一周`` versus
+        # ``default_第一周``).  Prefer the explicit assignment manifest when
+        # its week_name/stem matches; otherwise retain the legacy directory
+        # fallback for repositories without assignment configs.
+        normalized_week = str(week).strip()
+        matches: list[Path] = []
+        for path in list_assignment_config_paths():
+            try:
+                payload = load_json(path)
+            except (OSError, ValueError):
+                continue
+            configured_week = str(payload.get("week_name") or path.stem).strip()
+            configured_id = str(payload.get("assignment_id") or "").strip()
+            if normalized_week in {path.stem, configured_week, configured_id}:
+                matches.append(path)
+        if len(matches) == 1:
+            return load_assignment_config(matches[0])
+        if len(matches) > 1:
+            exact_stem = [path for path in matches if path.stem == normalized_week]
+            if len(exact_stem) == 1:
+                return load_assignment_config(exact_stem[0])
         return build_default_assignment_config(week)
     assignment_paths = list_assignment_config_paths()
     if len(assignment_paths) == 1:

@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import io
 import json
 import mimetypes
@@ -15,6 +16,7 @@ from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import fitz
@@ -34,7 +36,11 @@ from project_config import (
     write_export_engine_setting,
     write_local_env_var,
 )
-from run_batch_grading import parse_result_text
+from run_batch_grading import build_result_txt_reference, load_agent_pipeline_config, parse_result_text
+from grading_graph.review import ReviewConflict, ReviewGateError, ReviewStore
+from grading_graph.adapters.legacy_result import candidate_to_legacy_projection, legacy_text_to_candidate
+from grading_graph.schemas import StudentStatus, TeacherDecision
+from grading_graph.store import atomic_write_bytes, atomic_write_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,6 +82,23 @@ _LATEX_TEXT_ESCAPES = {
     "^": r"\textasciicircum{}",
 }
 _LATEX_REQUIRED_FILES = ["standalone.cls", "ctex.sty", "amsmath.sty", "amssymb.sty", "bm.sty"]
+
+
+def _format_katex_export_failure(stdout: str) -> str:
+    raw_output = str(stdout or "").strip()
+    log_tail = "\n".join(raw_output.splitlines()[-25:]).strip()
+
+    if "Executable doesn't exist" in raw_output and "playwright install" in raw_output:
+        return (
+            "KaTeX 截图失败，无法导出图片。\n"
+            "当前环境缺少 Playwright Chromium 浏览器。\n"
+            "请在项目根目录运行：\n"
+            "npx playwright install chromium"
+        )
+
+    if log_tail:
+        return f"KaTeX 截图失败，无法导出图片。\n{log_tail}"
+    return "KaTeX 截图失败，无法导出图片。"
 
 
 def _escape_latex_text(text: str) -> str:
@@ -374,9 +397,7 @@ def render_review_text_to_png_bytes_with_katex(source: str) -> bytes:
             check=False,
         )
         if completed.returncode != 0 or not output_path.is_file():
-            log_tail = "\n".join(completed.stdout.splitlines()[-25:]).strip()
-            detail = f"\n{log_tail}" if log_tail else ""
-            raise ExportImageError(f"KaTeX 截图失败，无法导出图片。{detail}")
+            raise ExportImageError(_format_katex_export_failure(completed.stdout))
         return output_path.read_bytes()
 
 
@@ -387,12 +408,21 @@ class ReviewRepository:
         self.processed_dir = assignment_config.processed_images_dir
         self.results_dir = assignment_config.results_dir
         self.ui_dir = Path(__file__).resolve().parent / "review_ui"
+        self.review_store = ReviewStore(self.week_dir)
         self._export_lock = threading.Lock()
         self._export_condition = threading.Condition(self._export_lock)
         self._export_queue: deque[str] = deque()
         self._export_queued_ids: set[str] = set()
         self._export_records: dict[str, dict] = {}
+        self._review_lock = threading.RLock()
         self._start_export_workers()
+
+    @staticmethod
+    def _validate_student_id(student_id: str) -> str:
+        value = str(student_id)
+        if not value or value in {".", ".."} or "/" in value or "\\" in value:
+            raise FileNotFoundError("非法学生标识")
+        return value
 
     def _start_export_workers(self) -> None:
         for index in range(_EXPORT_WORKER_COUNT):
@@ -404,6 +434,9 @@ class ReviewRepository:
             thread.start()
 
     def _get_export_source_path(self, student_id: str) -> Path | None:
+        if self._candidate_is_formal():
+            candidate_path = self.review_store.candidate_path(student_id)
+            return candidate_path if candidate_path.is_file() else None
         json_path = self.get_result_json_path(student_id)
         if json_path.exists() and json_path.stat().st_size > 0:
             return json_path
@@ -411,6 +444,19 @@ class ReviewRepository:
         if txt_path.exists() and txt_path.stat().st_size > 0:
             return txt_path
         return None
+
+    @staticmethod
+    def _candidate_is_formal() -> bool:
+        config = load_agent_pipeline_config()
+        shadow = config.get("shadow") if isinstance(config.get("shadow"), dict) else {}
+        source = str(shadow.get("formal_result_source") or config.get("feature_flag") or "legacy")
+        return source == "candidate"
+
+    def _active_candidate(self, student_id: str):
+        candidate = self.review_store.load_candidate(student_id)
+        if candidate is not None or self._candidate_is_formal():
+            return candidate
+        return self._legacy_candidate(student_id)
 
     def _get_export_source_mtime(self, student_id: str) -> float:
         source_path = self._get_export_source_path(student_id)
@@ -574,21 +620,270 @@ class ReviewRepository:
         for student_dir in sorted(path for path in self.processed_dir.iterdir() if path.is_dir()):
             result_txt_path = self.results_dir / f"{student_dir.name}.txt"
             result_json_path = self.results_dir / f"{student_dir.name}.json"
+            candidate_path = self.review_store.candidate_path(student_dir.name)
             page_count = len(self.get_image_paths(student_dir.name))
             students.append(
                 {
                     "id": student_dir.name,
                     "pageCount": page_count,
                     "hasResult": (
-                        (result_json_path.exists() and result_json_path.stat().st_size > 0)
-                        or (result_txt_path.exists() and result_txt_path.stat().st_size > 0)
+                        candidate_path.is_file()
+                        if self._candidate_is_formal()
+                        else (
+                            (result_json_path.exists() and result_json_path.stat().st_size > 0)
+                            or (result_txt_path.exists() and result_txt_path.stat().st_size > 0)
+                        )
                     ),
                     "hasExportImage": False,
+                    "reviewStatus": self.get_review_status(student_dir.name),
                 }
             )
         return students
 
+    def _legacy_candidate(self, student_id: str):
+        result_path = self.get_result_path(student_id)
+        if result_path.is_file() and result_path.stat().st_size > 0:
+            result_text = result_path.read_text(encoding="utf-8")
+        else:
+            result_json = self.load_result_json(student_id)
+            if not result_json.get("overall"):
+                return None
+            result_text = self.render_result_text(result_json)
+        return legacy_text_to_candidate(
+            result_text,
+            student_id=student_id,
+            assignment_id=self.assignment_config.assignment_id,
+            output_format=self.assignment_config.subject.output_format,
+        )
+
+    def get_review_status(self, student_id: str) -> str:
+        candidate = self._active_candidate(student_id)
+        if candidate is None:
+            return StudentStatus.PENDING.value
+        if self._candidate_is_formal():
+            return candidate.status.value
+        try:
+            return str(self.review_store.snapshot(student_id, fallback=candidate).get("status") or candidate.status.value)
+        except ReviewGateError:
+            return StudentStatus.PIPELINE_FAILED.value
+
+    def get_review_queue(self, status_filter: str = "") -> list[dict]:
+        entries: list[tuple[str, Any]] = []
+        for student in self.list_students():
+            student_id = str(student["id"])
+            candidate = self._active_candidate(student_id)
+            if candidate is not None:
+                entries.append((student_id, candidate))
+        if self._candidate_is_formal():
+            rows = [
+                {
+                    "studentId": student_id,
+                    "status": candidate.status.value,
+                    "overall": candidate.overall.value,
+                    "unresolvedRiskCount": candidate.unresolved_risk_count,
+                    "revision": 1,
+                    "submitReady": False,
+                    "readOnly": True,
+                }
+                for student_id, candidate in entries
+            ]
+        else:
+            rows = self.review_store.queue(entries)
+        known_ids = {row["studentId"] for row in rows}
+        rows.extend(
+            {
+                "studentId": student["id"],
+                "status": StudentStatus.PENDING.value,
+                "overall": "unknown",
+                "unresolvedRiskCount": 0,
+                "revision": 0,
+                "submitReady": False,
+            }
+            for student in self.list_students()
+            if student["id"] not in known_ids
+        )
+        if status_filter and status_filter not in {"all", ""}:
+            rows = [row for row in rows if row.get("status") == status_filter]
+        return sorted(rows, key=lambda row: str(row.get("studentId", "")))
+
+    def get_review_payload(self, student_id: str) -> dict:
+        candidate = self._active_candidate(student_id)
+        if candidate is None:
+            return {
+                "studentId": student_id,
+                "review": {"status": StudentStatus.PENDING.value, "revision": 0, "candidate": None, "decisions": [], "final": None, "submitReady": False, "readOnly": True},
+            }
+        if self._candidate_is_formal():
+            return {
+                "studentId": student_id,
+                "review": {
+                    "status": candidate.status.value,
+                    "revision": 1,
+                    "candidate": candidate.model_dump(mode="json"),
+                    "decisions": [],
+                    "final": None,
+                    "submitReady": False,
+                    "readOnly": True,
+                },
+            }
+        return {"studentId": student_id, "review": self.review_store.snapshot(student_id, fallback=candidate)}
+
+    def record_review_decision(self, student_id: str, payload: dict) -> dict:
+        with self._review_lock:
+            candidate = self.review_store.load_candidate(student_id) or self._legacy_candidate(student_id)
+            if candidate is None:
+                raise ReviewGateError("该学生尚无候选结果")
+            action = str(payload.get("action", "")).strip()
+            if action not in {"accept", "edit", "reject", "mark_unreadable", "rerun"}:
+                raise ReviewGateError("不支持的复核操作")
+            edited_transcription = payload.get("editedTranscription")
+            decision = TeacherDecision(
+                question_id=str(payload.get("questionId", "")).strip() or None,
+                action=action,
+                revision=max(1, int(payload.get("revision", 1) or 1)),
+                teacher_id=str(payload.get("teacherId", "teacher")).strip() or "teacher",
+                edited_transcription=edited_transcription,
+                edited_verdict=payload.get("editedVerdict"),
+                note=str(payload.get("note", "")),
+                rerun_run_id=str(payload.get("rerunRunId", "")).strip() or None,
+            )
+            expected = payload.get("expectedRevision")
+            expected_revision = int(expected) if expected is not None else None
+            return self.review_store.record_decision(
+                student_id,
+                decision,
+                expected_revision=expected_revision,
+                fallback=candidate,
+            )
+
+    def _compiled_manifest_path(self) -> Path:
+        path = Path(__file__).resolve().parent / "evaluation" / "answer_manifests" / self.assignment_config.assignment_id / "manifest.json"
+        if not path.is_file():
+            raise ReviewGateError(f"未找到已编译答案 manifest：{path.name}")
+        return path
+
+    def _rerun_provider(self) -> Any:
+        from grading_graph.provider import DASHSCOPE_API_KEY_ENV, DashScopeOpenAIProvider
+        from run_batch_grading import load_agent_pipeline_config
+
+        api_key, _source = resolve_api_key(DASHSCOPE_API_KEY_ENV)
+        if not api_key:
+            raise ReviewGateError(f"缺失 API Key：{DASHSCOPE_API_KEY_ENV}")
+        os.environ[DASHSCOPE_API_KEY_ENV] = api_key
+        config = load_agent_pipeline_config()
+        max_output_tokens = int((config.get("budgets") or {}).get("max_output_tokens", 2048))
+        return DashScopeOpenAIProvider.from_environment(max_output_tokens=max_output_tokens)
+
+    def rerun_review_question(self, student_id: str, question_id: str, payload: dict) -> dict:
+        """Run one question only and commit it as a new candidate version."""
+        from grading_graph.adapters.rerun import (
+            persist_targeted_rerun_audit,
+            run_targeted_question_rerun,
+        )
+        from grading_graph.schemas import Budget
+
+        with self._review_lock:
+            candidate = self.review_store.load_candidate(student_id) or self._legacy_candidate(student_id)
+            if candidate is None:
+                raise ReviewGateError("该学生尚无候选结果")
+            snapshot = self.review_store.snapshot(student_id, fallback=candidate)
+            expected_value = payload.get("expectedRevision")
+            expected_revision = int(expected_value) if expected_value is not None else int(snapshot["revision"])
+            self.review_store._check_revision(student_id, expected_revision)
+            old_run_id = candidate.run_id
+            run_id = f"rerun-{uuid.uuid4().hex}"
+            config = load_agent_pipeline_config()
+            budget_config = config.get("budgets") or {}
+            budget = Budget(
+                max_calls=int(budget_config.get("max_calls_per_student", 20)),
+                max_input_tokens=int(budget_config.get("max_input_tokens", 50000)),
+                max_output_tokens=int(budget_config.get("max_output_tokens", 10000)),
+                max_image_pixels=int(budget_config.get("max_image_pixels", 120000000)),
+                max_cost=float(budget_config.get("max_cost", 0)),
+            )
+            checkpoint_root = self.week_dir / "agent_artifacts" / "_checkpoints"
+            cache_root = self.week_dir / "agent_artifacts" / "_cache"
+            checkpoint_path = checkpoint_root / f"rerun-{hashlib.sha256(run_id.encode('utf-8')).hexdigest()[:16]}.sqlite"
+            try:
+                provider = self._rerun_provider()
+                replacement = run_targeted_question_rerun(
+                    provider=provider,
+                    week_dir=self.week_dir,
+                    candidate=self.review_store.current_candidate(student_id, fallback=candidate),
+                    question_id=question_id,
+                    answer_manifest_path=self._compiled_manifest_path(),
+                    run_id=run_id,
+                    budget=budget,
+                    checkpoint_path=checkpoint_path,
+                    cache_dir=cache_root,
+                )
+            except Exception as exc:
+                error_type = str(getattr(exc, "error_type", "") or type(exc).__name__)
+                failure_payload = {
+                    **payload,
+                    "questionId": question_id,
+                    "action": "rerun",
+                    "expectedRevision": expected_revision,
+                    "note": f"targeted_rerun_failed:{error_type}",
+                }
+                review = self.record_review_decision(student_id, failure_payload)
+                return {**review, "rerun": {"status": "failed", "errorType": error_type}}
+
+            success_payload = {
+                **payload,
+                "questionId": question_id,
+                "action": "rerun",
+                "expectedRevision": expected_revision,
+                "rerunRunId": run_id,
+                "note": "targeted_rerun_completed",
+            }
+            # Persist the request first.  If the candidate write is interrupted,
+            # replaying the event keeps the old candidate in review_required.
+            self.record_review_decision(student_id, success_payload)
+            self.review_store.save_candidate(replacement)
+            persist_targeted_rerun_audit(
+                week_dir=self.week_dir,
+                student_id=student_id,
+                question_id=question_id,
+                old_run_id=old_run_id,
+                candidate=replacement,
+                provider=provider,
+            )
+            return {
+                **self.review_store.snapshot(student_id),
+                "rerun": {"status": "completed", "runId": run_id, "questionId": question_id},
+            }
+
+    def finalize_review(self, student_id: str, payload: dict) -> dict:
+        with self._review_lock:
+            candidate = self.review_store.load_candidate(student_id) or self._legacy_candidate(student_id)
+            if candidate is None:
+                raise ReviewGateError("该学生尚无候选结果")
+            expected = payload.get("expectedRevision")
+            expected_revision = int(expected) if expected is not None else None
+            return self.review_store.finalize(
+                student_id,
+                teacher_id=str(payload.get("teacherId", "teacher")).strip() or "teacher",
+                expected_revision=expected_revision,
+                fallback=candidate,
+            )
+
+    def reopen_review(self, student_id: str, payload: dict) -> dict:
+        with self._review_lock:
+            expected = payload.get("expectedRevision")
+            expected_revision = int(expected) if expected is not None else None
+            return self.review_store.reopen(
+                student_id,
+                teacher_id=str(payload.get("teacherId", "teacher")).strip() or "teacher",
+                expected_revision=expected_revision,
+            )
+
+    def prepare_submission(self, student_id: str) -> dict:
+        with self._review_lock:
+            return self.review_store.prepare_submission(student_id)
+
     def get_image_paths(self, student_id: str) -> list[Path]:
+        student_id = self._validate_student_id(student_id)
         student_dir = self.processed_dir / student_id
         if not student_dir.is_dir():
             raise FileNotFoundError(f"学生目录不存在：{student_id}")
@@ -598,12 +893,30 @@ class ReviewRepository:
         )
 
     def get_result_path(self, student_id: str) -> Path:
+        student_id = self._validate_student_id(student_id)
         return self.results_dir / f"{student_id}.txt"
 
     def get_result_json_path(self, student_id: str) -> Path:
+        student_id = self._validate_student_id(student_id)
         return self.results_dir / f"{student_id}.json"
 
     def load_result_json(self, student_id: str) -> dict:
+        if self._candidate_is_formal():
+            candidate = self.review_store.load_candidate(student_id)
+            if candidate is None:
+                return {
+                    "student_name_or_id": student_id,
+                    "overall": "",
+                    "modules": {},
+                    "error_details_by_question": {},
+                    "proof_review_by_question": {},
+                    "agent_metadata": {
+                        "formal_result_source": "candidate",
+                        "status": "pending",
+                        "read_only": True,
+                    },
+                }
+            return candidate_to_legacy_projection(candidate, student_name=student_id)
         json_path = self.get_result_json_path(student_id)
         if json_path.exists() and json_path.stat().st_size > 0:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
@@ -630,12 +943,18 @@ class ReviewRepository:
         overall = safe_payload.get("overall")
         modules = safe_payload.get("modules")
 
+        preserved_metadata = {
+            key: safe_payload[key]
+            for key in ("agent_metadata", "candidate", "review", "schema_version", "graph_version", "run_id")
+            if key in safe_payload
+        }
         return {
             "student_name_or_id": student_name if isinstance(student_name, str) else parsed.get("student_name_or_id", ""),
             "overall": overall if isinstance(overall, str) else parsed.get("overall", ""),
             "modules": modules if isinstance(modules, dict) else parsed.get("modules", {}),
             "error_details_by_question": parsed.get("error_details_by_question", {}),
             "proof_review_by_question": parsed.get("proof_review_by_question", {}),
+            **preserved_metadata,
         }
 
     def render_result_text(self, result_json: dict) -> str:
@@ -672,11 +991,24 @@ class ReviewRepository:
     def get_student_payload(self, student_id: str) -> dict:
         image_paths = self.get_image_paths(student_id)
         images = [f"/images/{student_id}/{path.name}" for path in image_paths]
+        image_variants = []
+        artifact_pages = self.week_dir / "agent_artifacts" / ReviewStore.student_hash(student_id) / "pages"
+        for path in image_paths:
+            page = get_page_number(path)
+            page_dir = artifact_pages / f"page_{page}"
+            variants = {"original": f"/images/{student_id}/{path.name}"}
+            for view in ("rectified", "normalized", "enhanced"):
+                variant_path = page_dir / f"{view}.png"
+                if variant_path.is_file():
+                    variants[view] = f"/agent-images/{student_id}/{page}/{view}.png"
+            image_variants.append({"page": page, **variants})
         result_json = self.load_result_json(student_id)
         return {
             "id": student_id,
             "images": images,
+            "imageVariants": image_variants,
             "resultJson": result_json,
+            "review": self.get_review_payload(student_id).get("review"),
             "exportImage": self.get_export_image_status(student_id, auto_enqueue=True, urgent=False),
         }
 
@@ -684,10 +1016,15 @@ class ReviewRepository:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         text = rendered_text if isinstance(rendered_text, str) else self.render_result_text(result_json)
         enriched_payload = self.enrich_result_json(result_json, rendered_text=text)
-        json_path = self.get_result_json_path(student_id)
-        json_path.write_text(json.dumps(enriched_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         result_path = self.get_result_path(student_id)
-        result_path.write_text(text, encoding="utf-8")
+        json_path = self.get_result_json_path(student_id)
+        persisted_payload = {
+            "result_txt": build_result_txt_reference(result_path),
+            "parsed_with_output_format": True,
+            **enriched_payload,
+        }
+        atomic_write_json(json_path, persisted_payload)
+        atomic_write_bytes(result_path, text.encode("utf-8"))
         return self.queue_export_render(student_id, urgent=True)
 
     def build_export_image_source(
@@ -696,7 +1033,9 @@ class ReviewRepository:
         result_json: dict | None = None,
         rendered_text: str | None = None,
     ) -> str:
-        if isinstance(rendered_text, str):
+        if self._candidate_is_formal():
+            source_text = self.render_result_text(self.load_result_json(student_id))
+        elif isinstance(rendered_text, str):
             source_text = rendered_text
         elif isinstance(result_json, dict):
             source_text = self.render_result_text(result_json)
@@ -744,11 +1083,28 @@ class ReviewRepository:
         return asset_path
 
     def resolve_image(self, student_id: str, file_name: str) -> Path:
-        image_path = (self.processed_dir / student_id / file_name).resolve()
-        student_dir = (self.processed_dir / student_id).resolve()
-        if student_dir not in image_path.parents:
+        student_id = self._validate_student_id(student_id)
+        root = self.processed_dir.resolve()
+        student_dir = (root / student_id).resolve()
+        image_path = (student_dir / file_name).resolve()
+        if student_dir.parent != root or student_dir not in image_path.parents:
             raise FileNotFoundError("非法图片路径")
         if not image_path.is_file():
+            raise FileNotFoundError(file_name)
+        return image_path
+
+    def resolve_agent_image(self, student_id: str, page: str, file_name: str) -> Path:
+        if file_name not in {"original.png", "rectified.png", "normalized.png", "enhanced.png"}:
+            raise FileNotFoundError(file_name)
+        try:
+            page_number = int(page)
+        except ValueError as exc:
+            raise FileNotFoundError(page) from exc
+        if page_number < 1:
+            raise FileNotFoundError(page)
+        root = (self.week_dir / "agent_artifacts" / ReviewStore.student_hash(student_id) / "pages").resolve()
+        image_path = (root / f"page_{page_number}" / file_name).resolve()
+        if root not in image_path.parents or not image_path.is_file():
             raise FileNotFoundError(file_name)
         return image_path
 
@@ -928,6 +1284,28 @@ def _build_pipeline_command(task_name: str, assignment_path: Path, max_workers: 
         ]
         if flag_enabled:
             cmd.append("--regrade")
+        pipeline_config = load_agent_pipeline_config()
+        if str(pipeline_config.get("feature_flag") or "legacy") == "candidate":
+            assignment = load_assignment_config(assignment_path)
+            student_count = 0
+            if assignment.processed_images_dir.is_dir():
+                student_count = sum(1 for path in assignment.processed_images_dir.iterdir() if path.is_dir())
+            budgets = pipeline_config.get("budgets") if isinstance(pipeline_config.get("budgets"), dict) else {}
+            cmd.extend(
+                [
+                    "--engine",
+                    "candidate",
+                    "--online",
+                    "--max-students",
+                    str(max(1, student_count)),
+                    "--max-calls",
+                    str(max(1, int(budgets.get("max_calls_per_student", 60)))),
+                    "--max-input-tokens",
+                    str(max(1, int(budgets.get("max_input_tokens", 250000)))),
+                    "--max-output-tokens",
+                    str(max(1, int(budgets.get("max_output_tokens", 50000)))),
+                ]
+            )
         return cmd
     raise ValueError(f"不支持的任务类型：{task_name}")
 
@@ -1154,7 +1532,6 @@ def create_handler():
                 {
                     "ok": True,
                     "envName": env_name,
-                    "apiKey": local_value,
                     "hasApiKey": bool(local_value),
                     "storePath": str(LOCAL_ENV_FILE),
                 }
@@ -1454,6 +1831,30 @@ def create_handler():
                 inline=False,
             )
 
+        def _read_json_body(self) -> dict:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            payload = json.loads(raw_body.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("JSON body must be an object")
+            return payload
+
+        def _get_review_queue(self, parsed_url) -> None:
+            repo = _repository
+            if repo is None:
+                self.send_json({"queue": []})
+                return
+            query = parse_qs(parsed_url.query or "")
+            status_filter = str((query.get("status") or [""])[0]).strip()
+            self.send_json({"ok": True, "queue": repo.get_review_queue(status_filter)})
+
+        def _get_review_payload(self, student_id: str) -> None:
+            repo = _repository
+            if repo is None:
+                self.send_json({"error": "当前未加载作业周，请先在控制台选择周并进入批阅"}, status=HTTPStatus.CONFLICT)
+                return
+            self.send_json({"ok": True, **repo.get_review_payload(student_id)})
+
         def do_GET(self) -> None:
             try:
                 parsed = urlparse(self.path)
@@ -1482,6 +1883,14 @@ def create_handler():
                     else:
                         self.send_json({"students": repo.list_students()})
                     return
+                if path == "/api/review-queue":
+                    self._get_review_queue(parsed)
+                    return
+                if path.startswith("/api/review/"):
+                    review_student_id = unquote(path[len("/api/review/"):].rstrip("/"))
+                    if review_student_id and "/" not in review_student_id:
+                        self._get_review_payload(review_student_id)
+                        return
                 if path.startswith("/api/student/") and path.endswith("/export-image-status"):
                     if repo is None:
                         self.send_json({"error": "当前未加载作业周，请先在控制台选择周并进入批阅"}, status=HTTPStatus.CONFLICT)
@@ -1534,6 +1943,17 @@ def create_handler():
                         return
                     _, student_id, file_name = parts
                     self.serve_file(repo.resolve_image(student_id, file_name))
+                    return
+                if path.startswith("/agent-images/"):
+                    if repo is None:
+                        self.send_error(HTTPStatus.NOT_FOUND, "当前未加载作业周")
+                        return
+                    parts = [unquote(part) for part in path.split("/") if part]
+                    if len(parts) != 4:
+                        self.send_error(HTTPStatus.NOT_FOUND)
+                        return
+                    _, student_id, page, file_name = parts
+                    self.serve_file(repo.resolve_agent_image(student_id, page, file_name))
                     return
                 if path.startswith("/results-images/"):
                     self.send_error(HTTPStatus.NOT_FOUND)
@@ -1608,30 +2028,14 @@ def create_handler():
                     self._export_student_image(student_id)
                     return
 
-                if not path.startswith("/api/student/"):
-                    self.send_error(HTTPStatus.NOT_FOUND)
+                if path.startswith(("/api/review/", "/api/gold/", "/api/student/")):
+                    self.send_json(
+                        {"error": "manual_scoring_disabled", "message": "人工打分与人工标注接口已停用"},
+                        status=HTTPStatus.GONE,
+                    )
                     return
 
-                repo = _repository
-                if repo is None:
-                    self.send_json({"error": "当前未加载作业周，请先在控制台选择周并进入批阅"}, status=HTTPStatus.CONFLICT)
-                    return
-
-                student_id = unquote(path[len("/api/student/"):])
-                content_length = int(self.headers.get("Content-Length", "0"))
-                raw_body = self.rfile.read(content_length)
-                payload = json.loads(raw_body.decode("utf-8"))
-                result_json = payload.get("resultJson")
-                rendered_text = payload.get("renderedText")
-                if not isinstance(result_json, dict):
-                    self.send_error(HTTPStatus.BAD_REQUEST, "resultJson must be object")
-                    return
-                if rendered_text is not None and not isinstance(rendered_text, str):
-                    self.send_error(HTTPStatus.BAD_REQUEST, "renderedText must be string")
-                    return
-
-                export_status = repo.save_result(student_id, result_json, rendered_text)
-                self.send_json({"ok": True, "exportImage": export_status})
+                self.send_error(HTTPStatus.NOT_FOUND)
             except FileNotFoundError as exc:
                 self.send_error(HTTPStatus.NOT_FOUND, str(exc))
             except ExportImageError as exc:
@@ -1665,11 +2069,16 @@ def create_handler():
 
         def send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                # Browsers may cancel a stale request while switching students;
+                # do not turn that normal disconnect into a second error response.
+                return
 
         def send_binary(
             self,
