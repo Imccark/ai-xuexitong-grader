@@ -20,24 +20,13 @@ AI-powered grader for Xuexitong assignments
 
 ## Quick Start
 
-推荐从 [Releases](https://github.com/Imccark/ai-xuexitong-grader/releases/tag/v2.0.0) 下载 `ai-xuexitong-grader-v2.0.0-windows.zip`，解压后在目录中打开 PowerShell。
+推荐从 [Releases](https://github.com/Imccark/ai-xuexitong-grader/releases/tag/v2.0.0) 下载 `ai-xuexitong-grader-v2.0.0-windows.zip`。解压后双击 `启动.bat`，程序会检查依赖并自动打开本地控制台。
 
-安装 Python 依赖：
+首次启动前需要安装 Python 3.13 和 uv。也可以在 PowerShell 中手动运行：
 
 ```powershell
 uv sync --extra orientation --no-dev
-```
-
-启动本地控制台：
-
-```powershell
 uv run python -m app.review_app --port 8765
-```
-
-浏览器打开：
-
-```text
-http://127.0.0.1:8765
 ```
 
 第一次使用时，在控制台依次完成：
@@ -269,9 +258,7 @@ ai-xuexitong-grader/
 │   ├── models/
 │   ├── prompts/
 │   └── review_ui/
-├── docs/                   使用和迁移说明
-├── tests/                  自动测试
-└── tools/                  布局、评测和维护工具
+└── 启动.bat               Windows 一键启动
 ```
 
 每个作业周的数据单独保存在对应目录中：

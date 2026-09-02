@@ -17,7 +17,3 @@ sympy
 
 # Explicit DOCX ingestion
 python-docx
-
-# Async graph tests
-pytest
-pytest-asyncio

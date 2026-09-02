@@ -2,10 +2,6 @@
   "name": "ai-xuexitong-grader",
   "version": "2.0.0",
   "description": "LangGraph 多智能体学习通作业批改与本地审阅工具",
-  "main": "index.js",
-  "scripts": {
-    "test": "playwright test"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Imccark/ai-xuexitong-grader.git"
@@ -18,7 +14,7 @@
     "url": "https://github.com/Imccark/ai-xuexitong-grader/issues"
   },
   "homepage": "https://github.com/Imccark/ai-xuexitong-grader#readme",
-  "devDependencies": {
+  "dependencies": {
     "playwright": "^1.58.2"
   }
 }

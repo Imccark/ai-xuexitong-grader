@@ -34,19 +34,5 @@ layout = [
   "paddlepaddle>=3.2,<4",
 ]
 
-[dependency-groups]
-dev = [
-  "pytest",
-  "pytest-asyncio",
-]
-
 [tool.uv]
 package = false
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-addopts = "-ra -p no:cacheprovider"
-markers = [
-  "online: requires explicit online provider access",
-]

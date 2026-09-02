@@ -3,6 +3,15 @@ __pycache__/
 .venv/
 node_modules/
 
+# Internal development and validation files (not part of the public runtime)
+/.github/
+/docs/
+/tests/
+/tools/
+/playwright.config.cjs
+/CONTRIBUTING.md
+/SECURITY.md
+
 # Local week data and generated artifacts
 */raw_submissions/
 */processed_images/
@@ -71,8 +80,6 @@ review_app.audit*.log
 # Private local automation and provider configuration
 /.codex/skills/
 /app/configs/teacher_labeling.json
-/docs/langgraph-multi-agent-grading-upgrade-plan.md
-/docs/layout-dataset-cloud-readiness.md
 .env
 .env.*
 !.env.example
